@@ -1,0 +1,9 @@
+¿Los lectores deben ver el documento completo dentro de la app?
+Mi recomendación para V1: visor controlado en la app y estandarizar la lectura sobre PDF; si suben DOCX, se conserva el original y se prepara una vista/derivado para lectura.Me parece esta idea.
+
+Como algunos lectores no tendrán correo corporativo, ¿quieres que el login sea por username o email + contraseña, dejando email como opcional y username como obligatorio? Me parece bien, algo que podemos hacer también es agregar el DUI que es un número de 9 dígitos que tiene este formato 12345678-9, eso para poder contrastarlo con la base de datos de empleados que se encuentran activos, de esa manera si un empleado se da de baja, ya no pueda acceder (esto dejemos la infraestructura para hacer esa conexión y validación posterior). También podemos hacer el registro por email y hacer la validación de que el correo existe. También dentro de la parte de login se debe manejar el olvido de contraseña para poder enviar una constraseña temporal al correo registrado por el usuario y hacer el cambio de contraseña.
+
+Sobre búsqueda semántica con SQL Server: ¿te parece bien que en el MVP usemos SQL Server como base transaccional y una capa de embeddings desacoplada preparada para migrar luego a un motor vectorial dedicado?
+Es la opción más pragmática sin meter otra base desde el día 1. Me parece bien.
+
+¿Ya tienes una instancia local de SQL Server disponible para desarrollo, o quieres que deje el proyecto configurado por variables de entorno y después conectamos la base real? Ahorita no tengo una instancia local, creemos todos los recursos e infraestructura para que después quede solo para montarse y desplegarse en un servidor. De momento estará corriendo en mi PC de manera local.

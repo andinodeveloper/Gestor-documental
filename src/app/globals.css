@@ -1,0 +1,205 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f6f4ef;
+  --foreground: #162126;
+  --panel: rgba(255, 255, 255, 0.9);
+  --panel-strong: #ffffff;
+  --panel-muted: #f0f2f2;
+  --line: rgba(15, 61, 75, 0.08);
+  --line-strong: rgba(15, 61, 75, 0.14);
+  --accent: #124d5d;
+  --accent-strong: #0b3945;
+  --accent-soft: #e8f0f2;
+  --amber: #c1872a;
+  --amber-soft: #f6ecd8;
+  --green: #2f7352;
+  --green-soft: #e5f3eb;
+  --red: #b24f4f;
+  --red-soft: #f8e7e3;
+  --slate: #54646d;
+  --font-body: Aptos, "Segoe UI", "Segoe UI Variable Text", system-ui, sans-serif;
+  --font-display: "Aptos Display", "Segoe UI Variable Display", "Trebuchet MS",
+    sans-serif;
+  --shadow-soft: 0 16px 34px rgba(15, 61, 75, 0.06);
+  --shadow-card: 0 10px 24px rgba(15, 61, 75, 0.05);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-panel-strong: var(--panel-strong);
+  --color-panel-muted: var(--panel-muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+  --color-amber: var(--amber);
+  --color-amber-soft: var(--amber-soft);
+  --color-green: var(--green);
+  --color-green-soft: var(--green-soft);
+  --color-red: var(--red);
+  --color-red-soft: var(--red-soft);
+  --color-slate: var(--slate);
+  --font-sans: var(--font-body);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(18, 77, 93, 0.04), transparent 18rem),
+    linear-gradient(180deg, #f8f6f0 0%, #f3efe7 100%);
+  color: var(--foreground);
+  font-family: var(--font-body);
+}
+
+a,
+button,
+input,
+select,
+textarea {
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.password-input::-ms-reveal,
+.password-input::-ms-clear,
+.password-input::-webkit-credentials-auto-fill-button,
+.password-input::-webkit-reveal-button {
+  display: none;
+}
+
+.password-input {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+::selection {
+  background: rgba(15, 77, 93, 0.18);
+}
+
+@layer components {
+  .surface-card {
+    @apply rounded-[24px] border border-white/80 bg-white/88 backdrop-blur-md;
+    box-shadow: var(--shadow-soft);
+  }
+
+  .surface-card-compact {
+    @apply rounded-[20px] border border-white/75 bg-white/90;
+    box-shadow: var(--shadow-card);
+  }
+
+  .data-grid {
+    @apply overflow-hidden rounded-[24px] border border-line bg-white/88 backdrop-blur-sm;
+    box-shadow: var(--shadow-card);
+  }
+
+  .section-label {
+    @apply text-[10px] font-semibold tracking-[0.22em] uppercase text-slate;
+  }
+
+  .display-title {
+    font-family: var(--font-display);
+    @apply text-[2rem] font-semibold tracking-[-0.05em] text-foreground md:text-[2.8rem];
+  }
+
+  .panel-title {
+    font-family: var(--font-display);
+    @apply text-[1.45rem] font-semibold tracking-[-0.04em] text-foreground;
+  }
+
+  .button-primary {
+    @apply inline-flex items-center justify-center rounded-full bg-accent px-4 py-2.5 text-sm font-semibold text-white hover:bg-accent-strong;
+  }
+
+  .button-secondary {
+    @apply inline-flex items-center justify-center rounded-full border border-line bg-white/90 px-4 py-2.5 text-sm font-semibold text-foreground hover:border-line-strong hover:bg-panel-muted/70;
+  }
+
+  .button-ghost {
+    @apply inline-flex items-center justify-center rounded-full border border-transparent bg-accent/6 px-3.5 py-2 text-sm font-semibold text-accent hover:bg-accent/10;
+  }
+
+  .field-input {
+    @apply w-full rounded-[18px] border border-line bg-white px-4 py-3 text-sm text-foreground outline-none focus:border-accent focus:shadow-[0_0_0_4px_rgba(15,77,93,0.08)];
+  }
+
+  .field-textarea {
+    @apply w-full rounded-[18px] border border-line bg-white px-4 py-3 text-sm text-foreground outline-none focus:border-accent focus:shadow-[0_0_0_4px_rgba(15,77,93,0.08)];
+    resize: vertical;
+  }
+
+  .field-file {
+    @apply block w-full rounded-[18px] border border-dashed border-line bg-white px-4 py-3 text-sm text-foreground file:mr-3 file:rounded-full file:border-0 file:bg-accent file:px-3 file:py-2 file:text-xs file:font-semibold file:uppercase file:tracking-[0.14em] file:text-white;
+  }
+
+  .meta-pill {
+    @apply inline-flex items-center rounded-full border border-line bg-white/80 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate;
+  }
+
+  .panel-strip {
+    @apply rounded-[26px] border border-line bg-white/70;
+  }
+
+  .soft-divider {
+    @apply border-t border-line;
+  }
+
+  .grain-ring {
+    position: relative;
+  }
+
+  .grain-ring::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.9),
+      rgba(15, 77, 93, 0.08)
+    );
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .subtle-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(15, 77, 93, 0.24) transparent;
+  }
+
+  .subtle-scroll::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .subtle-scroll::-webkit-scrollbar-thumb {
+    background: rgba(15, 77, 93, 0.18);
+    border-radius: 999px;
+  }
+
+  .subtle-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}

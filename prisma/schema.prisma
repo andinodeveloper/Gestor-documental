@@ -1,0 +1,484 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+}
+
+model User {
+  id             String            @id @default(uuid())
+  name           String
+  username       String            @unique
+  email          String?
+  dui            String?
+  passwordHash   String
+  mustChangePassword Boolean       @default(false)
+  isActive       Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  roles          UserRole[]
+  readerGroups   UserReaderGroup[]
+  permissions    UserPermission[]
+
+  @@index([email])
+  @@index([dui])
+}
+
+model Role {
+  id            String           @id @default(uuid())
+  code          String           @unique
+  name          String
+  description   String?
+  isSystemRole  Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  users         UserRole[]
+  permissions   RolePermission[]
+}
+
+model Permission {
+  id            String           @id @default(uuid())
+  code          String           @unique
+  module        String
+  action        String
+  description   String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  roles         RolePermission[]
+  readerGroups  ReaderGroupPermission[]
+  users         UserPermission[]
+}
+
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String
+  roleId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  role      Role     @relation(fields: [roleId], references: [id])
+
+  @@unique([userId, roleId])
+}
+
+model RolePermission {
+  id            String      @id @default(uuid())
+  roleId        String
+  permissionId  String
+  createdAt     DateTime    @default(now())
+  role          Role        @relation(fields: [roleId], references: [id])
+  permission    Permission  @relation(fields: [permissionId], references: [id])
+
+  @@unique([roleId, permissionId])
+}
+
+model UserPermission {
+  id            String      @id @default(uuid())
+  userId        String
+  permissionId  String
+  effect        String      @default("GRANT")
+  createdAt     DateTime    @default(now())
+  user          User        @relation(fields: [userId], references: [id])
+  permission    Permission  @relation(fields: [permissionId], references: [id])
+
+  @@unique([userId, permissionId])
+}
+
+model ReaderGroup {
+  id            String            @id @default(uuid())
+  code          String            @unique
+  name          String
+  description   String?
+  categoryType  String?
+  isActive      Boolean           @default(true)
+  sortOrder     Int               @default(0)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  permissions   ReaderGroupPermission[]
+  users         UserReaderGroup[]
+}
+
+model ReaderGroupPermission {
+  id            String       @id @default(uuid())
+  readerGroupId String
+  permissionId  String
+  createdAt     DateTime     @default(now())
+  readerGroup   ReaderGroup  @relation(fields: [readerGroupId], references: [id])
+  permission    Permission   @relation(fields: [permissionId], references: [id])
+
+  @@unique([readerGroupId, permissionId])
+}
+
+model UserReaderGroup {
+  id               String       @id @default(uuid())
+  userId           String
+  readerGroupId    String
+  validFrom        DateTime?
+  validUntil       DateTime?
+  assignedByUserId String?
+  createdAt        DateTime     @default(now())
+  revokedAt        DateTime?
+  user             User         @relation(fields: [userId], references: [id])
+  readerGroup      ReaderGroup  @relation(fields: [readerGroupId], references: [id])
+}
+
+model ProcessGroup {
+  id          String    @id @default(uuid())
+  code        String    @unique
+  name        String
+  description String?
+  sortOrder   Int       @default(0)
+  isActive    Boolean   @default(true)
+  processes   Process[]
+}
+
+model Process {
+  id             String       @id @default(uuid())
+  processGroupId String
+  code           String       @unique
+  name           String
+  description    String?
+  sortOrder      Int          @default(0)
+  isActive       Boolean      @default(true)
+  processGroup   ProcessGroup @relation(fields: [processGroupId], references: [id])
+  documents      Document[]
+  requestSuggestions DocumentRequest[] @relation("RequestSuggestedProcess")
+}
+
+model DocumentType {
+  id                           String             @id @default(uuid())
+  code                         String             @unique
+  name                         String
+  category                     String
+  definition                   String?
+  mustContain                  String?
+  mustNotContain               String?
+  commonUseCases               String?
+  recommendedReviewFrequency   String?
+  sortOrder                    Int                @default(0)
+  isActive                     Boolean            @default(true)
+  sequences                    DocumentSequence[]
+  documents                    Document[]
+  requestSuggestions           DocumentRequest[]  @relation("RequestSuggestedDocumentType")
+}
+
+model DocumentSequence {
+  id              String       @id @default(uuid())
+  documentTypeId  String
+  nextNumber      Int
+  updatedAt       DateTime     @updatedAt
+  documentType    DocumentType @relation(fields: [documentTypeId], references: [id])
+}
+
+model Document {
+  id                String          @id @default(uuid())
+  identityCode      String?
+  temporaryCode     String?
+  title             String
+  description       String?
+  documentTypeId    String
+  processId         String
+  status            String
+  currentVersionId  String?
+  createdByUserId   String?
+  ownerEditorUserId String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  officializedAt    DateTime?
+  archivedAt        DateTime?
+  archiveReason     String?
+  replacedByDocumentId String?
+  documentType      DocumentType    @relation(fields: [documentTypeId], references: [id])
+  process           Process         @relation(fields: [processId], references: [id])
+  versions          DocumentVersion[]
+  relatedRequests   DocumentRequest[] @relation("RequestRelatedDocument")
+
+  @@index([identityCode])
+  @@index([temporaryCode])
+}
+
+model DocumentVersion {
+  id               String        @id @default(uuid())
+  documentId       String
+  majorVersion     Int
+  minorVersion     Int
+  versionLabel     String
+  fullCode         String?
+  changeType       String?
+  changeSummary    String?
+  status           String
+  previousVersionId String?
+  createdByUserId  String?
+  createdAt        DateTime      @default(now())
+  submittedAt      DateTime?
+  approvedAt       DateTime?
+  officializedAt   DateTime?
+  isCurrent        Boolean       @default(false)
+  document         Document      @relation(fields: [documentId], references: [id])
+  reviewRounds     ReviewRound[]
+}
+
+model DocumentFile {
+  id               String   @id @default(uuid())
+  documentId       String
+  documentVersionId String?
+  fileRole         String
+  originalFileName String
+  storedFileName   String
+  storagePath      String
+  mimeType         String
+  sizeBytes        Int
+  checksum         String?
+  uploadedByUserId String?
+  uploadedAt       DateTime @default(now())
+}
+
+model DocumentRequest {
+  id                     String        @id @default(uuid())
+  requestCode            String        @unique
+  requestType            String
+  requesterUserId        String?
+  createdByUserId        String?
+  requesterArea          String?
+  suggestedDocumentTypeId String?
+  suggestedProcessId     String?
+  relatedDocumentId      String?
+  title                  String
+  description            String
+  justification          String?
+  priority               String?
+  requiredDate           DateTime?
+  status                 String
+  assignedEditorUserId   String?
+  assignedByUserId       String?
+  assignedAt             DateTime?
+  currentResponsibilityRole String     @default("ADMINISTRATOR")
+  waitingReason          String        @default("NONE")
+  waitingSince           DateTime?
+  lastRequesterResponseAt DateTime?
+  closedAt               DateTime?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  suggestedDocumentType  DocumentType? @relation("RequestSuggestedDocumentType", fields: [suggestedDocumentTypeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  suggestedProcess       Process?      @relation("RequestSuggestedProcess", fields: [suggestedProcessId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  relatedDocument        Document?     @relation("RequestRelatedDocument", fields: [relatedDocumentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  attachments            DocumentRequestAttachment[]
+  activities             DocumentRequestActivity[]
+  progressItems          DocumentRequestProgressItem[]
+}
+
+model DocumentRequestAttachment {
+  id                String          @id @default(uuid())
+  documentRequestId String
+  originalFileName  String
+  storagePath       String
+  mimeType          String
+  sizeBytes         Int
+  uploadedByUserId  String?
+  uploadedAt        DateTime        @default(now())
+  documentRequest   DocumentRequest @relation(fields: [documentRequestId], references: [id])
+
+  @@index([documentRequestId])
+}
+
+model DocumentRequestActivity {
+  id                String          @id @default(uuid())
+  documentRequestId String
+  actorUserId       String?
+  activityType      String
+  note              String?
+  statusAfter       String?
+  createdAt         DateTime        @default(now())
+  documentRequest   DocumentRequest @relation(fields: [documentRequestId], references: [id])
+
+  @@index([documentRequestId, createdAt])
+}
+
+model DocumentRequestProgressItem {
+  id                String          @id @default(uuid())
+  documentRequestId String
+  phaseCode         String
+  phaseName         String
+  activityCode      String
+  activityName      String
+  description       String?
+  weight            Int
+  sortOrder         Int
+  appliesToRequestType String
+  status            String
+  note              String?
+  completedAt       DateTime?
+  lastChangedAt     DateTime        @updatedAt
+  lastChangedByUserId String?
+  documentRequest   DocumentRequest @relation(fields: [documentRequestId], references: [id])
+
+  @@unique([documentRequestId, activityCode])
+  @@index([documentRequestId, sortOrder])
+}
+
+model ReviewRound {
+  id               String   @id @default(uuid())
+  documentVersionId String
+  roundNumber      Int
+  status           String
+  submittedByUserId String?
+  submittedAt      DateTime?
+  closedAt         DateTime?
+  documentVersion  DocumentVersion @relation(fields: [documentVersionId], references: [id])
+}
+
+model ReviewAssignment {
+  id               String                 @id @default(uuid())
+  reviewRoundId    String
+  userId           String
+  assignmentRole   String
+  status           String
+  decisionComment  String?
+  decidedAt        DateTime?
+}
+
+model DraftComment {
+  id                 String   @id @default(uuid())
+  reviewAssignmentId String
+  documentVersionId  String
+  commentType        String
+  comment            String
+  suggestedText      String?
+  sectionReference   String?
+  status             String
+  createdAt          DateTime @default(now())
+  resolvedAt         DateTime?
+  resolvedByUserId   String?
+}
+
+model DocumentAccessPolicy {
+  id                        String          @id @default(uuid())
+  documentId                String
+  documentVersionId         String?
+  visibilityLevel           String
+  defaultDirectReadAllowed  Boolean         @default(false)
+  defaultAiQueryAllowed     Boolean         @default(false)
+  defaultHistoryReadAllowed Boolean         @default(false)
+  defaultDownloadAllowed    Boolean         @default(false)
+  inheritFromDocument       Boolean         @default(true)
+  isActive                  Boolean         @default(true)
+  createdByUserId           String?
+  createdAt                 DateTime        @default(now())
+  updatedAt                 DateTime        @updatedAt
+}
+
+model DocumentAccessRule {
+  id                String       @id @default(uuid())
+  documentId        String
+  documentVersionId String?
+  subjectType       String
+  subjectId         String
+  accessScope       String
+  effect            String
+  validFrom         DateTime?
+  validUntil        DateTime?
+  reason            String?
+  createdByUserId   String?
+  createdAt         DateTime     @default(now())
+  revokedAt         DateTime?
+}
+
+model DocumentRelationship {
+  id                      String   @id @default(uuid())
+  sourceDocumentId        String
+  targetDocumentId        String
+  relationshipType        String
+  description             String?
+  appliesToVersionId      String?
+  isActive                Boolean  @default(true)
+  createdByUserId         String?
+  createdAt               DateTime @default(now())
+  inactivatedByUserId     String?
+  inactivatedAt           DateTime?
+  inactivationReason      String?
+  replacedByRelationshipId String?
+}
+
+model DownloadRequest {
+  id               String   @id @default(uuid())
+  documentId       String
+  documentVersionId String?
+  requesterUserId  String
+  reason           String
+  status           String
+  reviewedByUserId String?
+  reviewComment    String?
+  requestedAt      DateTime @default(now())
+  reviewedAt       DateTime?
+}
+
+model DownloadGrant {
+  id               String   @id @default(uuid())
+  documentId       String
+  documentVersionId String?
+  userId           String
+  grantedByUserId  String?
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+  revokedAt        DateTime?
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorUserId String?
+  action     String
+  entityType String
+  entityId   String
+  beforeData String?
+  afterData  String?
+  createdAt  DateTime @default(now())
+  ipAddress  String?
+  userAgent  String?
+}
+
+model AIIndexJob {
+  id                String         @id @default(uuid())
+  documentId        String
+  documentVersionId String
+  triggerReason     String
+  status            String
+  provider          String?
+  embeddingModel    String?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  errorMessage      String?
+  createdByUserId   String?
+  createdAt         DateTime       @default(now())
+}
+
+model AIQuerySession {
+  id                     String   @id @default(uuid())
+  userId                 String?
+  queryText              String
+  answerText             String?
+  filtersJson            String?
+  accessFilterJson       String?
+  readerGroupIdsJson     String?
+  authorizedDocumentCount Int?
+  deniedDocumentCount    Int?
+  modelProvider          String?
+  modelName              String?
+  latencyMs              Int?
+  status                 String
+  errorMessage           String?
+  createdAt              DateTime @default(now())
+  citations              AIQueryCitation[]
+}
+
+model AIQueryCitation {
+  id               String         @id @default(uuid())
+  aiQuerySessionId String
+  documentId       String
+  documentVersionId String?
+  documentChunkId  String?
+  relevanceScore   Float?
+  snippet          String?
+  documentLink     String?
+  createdAt        DateTime       @default(now())
+  aiQuerySession   AIQuerySession @relation(fields: [aiQuerySessionId], references: [id])
+}
