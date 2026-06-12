@@ -13,6 +13,7 @@
     "db:seed:auth": "node scripts/setup/seed-auth-demo.mjs",
     "db:seed:catalogs": "node scripts/setup/seed-document-catalogs.mjs",
     "db:setup:sqlserver": "node scripts/setup/apply-sqlserver-indexes.mjs",
+    "db:setup:request-tracking": "node scripts/setup/apply-request-tracking-schema.mjs",
     "db:validate": "prisma validate",
     "db:studio": "prisma studio"
   },

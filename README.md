@@ -110,6 +110,7 @@ Nota práctica:
 
 - `npm run db:generate`
 - `npm run db:push`
+- `npm run db:setup:request-tracking`
 - `npm run db:validate`
 - `npm run db:studio`
 
