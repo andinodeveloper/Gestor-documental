@@ -8,6 +8,17 @@ const prisma = new PrismaClient({ adapter });
 
 const statements = [
   {
+    name: "DocumentRequest.currentTrackingStageCode",
+    sql: `
+IF COL_LENGTH('dbo.DocumentRequest', 'currentTrackingStageCode') IS NULL
+BEGIN
+  ALTER TABLE dbo.DocumentRequest
+  ADD currentTrackingStageCode NVARCHAR(1000) NOT NULL
+    CONSTRAINT DF_DocumentRequest_currentTrackingStageCode DEFAULT N'0.1';
+END
+`,
+  },
+  {
     name: "DocumentRequest.currentResponsibilityRole",
     sql: `
 IF COL_LENGTH('dbo.DocumentRequest', 'currentResponsibilityRole') IS NULL
@@ -46,6 +57,66 @@ IF COL_LENGTH('dbo.DocumentRequest', 'lastRequesterResponseAt') IS NULL
 BEGIN
   ALTER TABLE dbo.DocumentRequest
   ADD lastRequesterResponseAt DATETIME2 NULL;
+END
+`,
+  },
+  {
+    name: "DocumentRequest.cancellationRequestedAt",
+    sql: `
+IF COL_LENGTH('dbo.DocumentRequest', 'cancellationRequestedAt') IS NULL
+BEGIN
+  ALTER TABLE dbo.DocumentRequest
+  ADD cancellationRequestedAt DATETIME2 NULL;
+END
+`,
+  },
+  {
+    name: "DocumentRequest.cancellationRequestedByUserId",
+    sql: `
+IF COL_LENGTH('dbo.DocumentRequest', 'cancellationRequestedByUserId') IS NULL
+BEGIN
+  ALTER TABLE dbo.DocumentRequest
+  ADD cancellationRequestedByUserId NVARCHAR(1000) NULL;
+END
+`,
+  },
+  {
+    name: "DocumentRequest.cancellationRequestReason",
+    sql: `
+IF COL_LENGTH('dbo.DocumentRequest', 'cancellationRequestReason') IS NULL
+BEGIN
+  ALTER TABLE dbo.DocumentRequest
+  ADD cancellationRequestReason NVARCHAR(1000) NULL;
+END
+`,
+  },
+  {
+    name: "DocumentRequestActivity.trackingStageCode",
+    sql: `
+IF COL_LENGTH('dbo.DocumentRequestActivity', 'trackingStageCode') IS NULL
+BEGIN
+  ALTER TABLE dbo.DocumentRequestActivity
+  ADD trackingStageCode NVARCHAR(1000) NULL;
+END
+`,
+  },
+  {
+    name: "DocumentRequestActivity.responsibilityRole",
+    sql: `
+IF COL_LENGTH('dbo.DocumentRequestActivity', 'responsibilityRole') IS NULL
+BEGIN
+  ALTER TABLE dbo.DocumentRequestActivity
+  ADD responsibilityRole NVARCHAR(1000) NULL;
+END
+`,
+  },
+  {
+    name: "DocumentRequestActivity.waitingReason",
+    sql: `
+IF COL_LENGTH('dbo.DocumentRequestActivity', 'waitingReason') IS NULL
+BEGIN
+  ALTER TABLE dbo.DocumentRequestActivity
+  ADD waitingReason NVARCHAR(1000) NULL;
 END
 `,
   },

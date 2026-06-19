@@ -24,7 +24,9 @@ type RequestsPageProps = {
 
 export default async function RequestsPage({ searchParams }: RequestsPageProps) {
   const user = await requireAuthorizedUser("/requests");
-  const filters = normalizeFilters(await searchParams);
+  const resolvedSearchParams = await searchParams;
+  const filters = normalizeFilters(resolvedSearchParams);
+  const requestId = readSingle(resolvedSearchParams.requestId);
   const snapshot = await getRequestsWorkspaceSnapshot(user, filters);
   const isReaderView = user.role === "READER";
 
@@ -65,6 +67,7 @@ export default async function RequestsPage({ searchParams }: RequestsPageProps) 
           canAssignRequests={snapshot.canAssignRequests}
           currentUser={{ id: user.id, role: user.role }}
           editors={snapshot.editors}
+          initialDetailRequestId={requestId}
           requests={snapshot.requests}
         />
       </section>

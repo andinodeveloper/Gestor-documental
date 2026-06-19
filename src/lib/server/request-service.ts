@@ -3,36 +3,35 @@ import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 
 import { canCreateDocumentRequests, REQUESTS_CREATE_PERMISSION } from "@/lib/auth/permissions";
-import { runtimeConfig } from "@/lib/config/runtime";
 import {
   findMockAccountById,
   listMockAccountsByRole,
   listMockAccountsByRoleAndPermission,
 } from "@/lib/auth/mock-accounts";
 import type { SessionUser } from "@/lib/auth/types";
+import { runtimeConfig } from "@/lib/config/runtime";
+import {
+  deriveWorkflowStatusFromTracking,
+  getRequestTrackingStage,
+  getRequestTrackingStages,
+  hasRequestStarted,
+} from "@/lib/request-tracking";
 import type {
+  EditorOptionRecord,
+  MetricCard,
   RequestActivityRecord,
   RequestActivityType,
   RequestBoardFilters,
-  EditorOptionRecord,
-  MetricCard,
   RequestDetailRecord,
   RequestOptionRecord,
   RequestPriority,
-  RequestProgressItemRecord,
   RequestRecord,
-  RequesterOptionRecord,
   RequestType,
-  RequestProgressItemStatus,
+  RequesterOptionRecord,
   ResponsibilityRole,
   WaitingReason,
   WorkflowStatus,
 } from "@/lib/types";
-import {
-  deriveWorkflowStatusFromTracking,
-  getRequestProgressSnapshot,
-  getRequestProgressTemplate,
-} from "@/lib/request-tracking";
 import { prisma } from "@/lib/server/db";
 import {
   deleteStoredRequestAttachments,
@@ -63,6 +62,9 @@ type RequestActivityRow = {
   id: string;
   actorUserId: string | null;
   activityType: string;
+  trackingStageCode: string | null;
+  responsibilityRole: string | null;
+  waitingReason: string | null;
   note: string | null;
   statusAfter: string | null;
   createdAt: Date;
@@ -74,22 +76,6 @@ type RequestAttachmentRow = {
   mimeType: string;
   sizeBytes: number;
   uploadedAt: Date;
-};
-
-type RequestProgressItemRow = {
-  id: string;
-  phaseCode: string;
-  phaseName: string;
-  activityCode: string;
-  activityName: string;
-  description: string | null;
-  weight: number;
-  sortOrder: number;
-  status: string;
-  note: string | null;
-  completedAt: Date | null;
-  lastChangedAt: Date;
-  lastChangedByUserId: string | null;
 };
 
 type RequestWithRelations = {
@@ -111,10 +97,15 @@ type RequestWithRelations = {
   assignedEditorUserId: string | null;
   assignedByUserId: string | null;
   assignedAt: Date | null;
+  currentTrackingStageCode: string | null;
   currentResponsibilityRole: string | null;
   waitingReason: string | null;
   waitingSince: Date | null;
   lastRequesterResponseAt: Date | null;
+  cancellationRequestedAt: Date | null;
+  cancellationRequestedByUserId: string | null;
+  cancellationRequestReason: string | null;
+  closedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   suggestedProcess: {
@@ -135,19 +126,16 @@ type RequestWithRelations = {
   } | null;
   attachments: RequestAttachmentRow[];
   activities: RequestActivityRow[];
-  progressItems: RequestProgressItemRow[];
 };
 
 type PrismaRequestTrackingClient = {
   documentRequest: {
-    findMany: (args: unknown) => Promise<RequestWithRelations[]>;
-    update: (args: unknown) => Promise<unknown>;
     create: (args: unknown) => Promise<unknown>;
-  };
-  documentRequestProgressItem: {
-    findMany: (args: unknown) => Promise<unknown>;
-    findUnique: (args: unknown) => Promise<RequestProgressItemRow | null>;
+    findMany: (args: unknown) => Promise<RequestWithRelations[]>;
+    findUnique: (args: unknown) => Promise<unknown>;
     update: (args: unknown) => Promise<unknown>;
+  };
+  documentRequestActivity: {
     create: (args: unknown) => Promise<unknown>;
   };
 };
@@ -169,9 +157,6 @@ const requestInclude = {
       title: true,
     },
   },
-  progressItems: {
-    orderBy: [{ sortOrder: "asc" }],
-  },
 };
 
 async function findRequestsWithRelations(input: {
@@ -179,31 +164,12 @@ async function findRequestsWithRelations(input: {
   orderBy?: Prisma.DocumentRequestOrderByWithRelationInput[];
   take?: number;
 }) {
-  let requests = await prismaTracking.documentRequest.findMany({
+  return prismaTracking.documentRequest.findMany({
     where: input.where,
     include: requestInclude,
     orderBy: input.orderBy,
     take: input.take,
   });
-
-  const missingProgress = requests.filter((request) => request.progressItems.length === 0);
-
-  if (missingProgress.length > 0) {
-    await Promise.all(
-      missingProgress.map((request) =>
-        ensureRequestProgressItems(request.id, normalizeRequestType(request.requestType)),
-      ),
-    );
-
-    requests = await prismaTracking.documentRequest.findMany({
-      where: input.where,
-      include: requestInclude,
-      orderBy: input.orderBy,
-      take: input.take,
-    });
-  }
-
-  return requests;
 }
 
 export async function getRequestIntakeSnapshot(user: SessionUser) {
@@ -237,16 +203,15 @@ export async function getRequestsWorkspaceSnapshot(
   filters: RequestBoardFilters = {},
 ) {
   const where = buildRequestWhereForUser(user, filters);
-  const [requests, editors, intakeSnapshot, requesterFilterOptions] =
-    await Promise.all([
-      findRequestsWithRelations({
-        where,
-        orderBy: [{ updatedAt: "desc" }],
-      }),
-      user.role === "READER" ? Promise.resolve([]) : listAssignableEditors(),
-      getRequestIntakeSnapshot(user),
-      user.role === "READER" ? Promise.resolve([]) : listRequestRequesterOptions(),
-    ]);
+  const [requests, editors, intakeSnapshot, requesterFilterOptions] = await Promise.all([
+    findRequestsWithRelations({
+      where,
+      orderBy: [{ updatedAt: "desc" }],
+    }),
+    user.role === "READER" ? Promise.resolve([]) : listAssignableEditors(),
+    getRequestIntakeSnapshot(user),
+    user.role === "READER" ? Promise.resolve([]) : listRequestRequesterOptions(),
+  ]);
 
   const people = await resolvePeopleFromRequests(requests);
 
@@ -272,7 +237,11 @@ export async function getDashboardRequestSnapshot() {
   const [pendingAssignmentCount, activeCount, closedCount] = await Promise.all([
     prisma.documentRequest.count({ where: { status: "PENDING_ASSIGNMENT" } }),
     prisma.documentRequest.count({
-      where: { status: { in: ["ASSIGNED", "IN_PROGRESS", "IN_REVIEW", "OBSERVED", "APPROVED", "OFFICIALIZED"] } },
+      where: {
+        status: {
+          in: ["ASSIGNED", "IN_PROGRESS", "IN_REVIEW", "OBSERVED", "APPROVED", "OFFICIALIZED"],
+        },
+      },
     }),
     prisma.documentRequest.count({
       where: { status: { in: ["CLOSED"] } },
@@ -363,6 +332,9 @@ export async function createDocumentRequest(input: {
       documentRequestId: createdRequest.id,
       actorUserId: input.createdByUser.id,
       activityType: "CREATED",
+      trackingStageCode: "0.1",
+      responsibilityRole: "ADMINISTRATOR",
+      waitingReason: "NONE",
       note:
         input.createdByUser.id === input.requesterUserId
           ? "Solicitud registrada por el solicitante."
@@ -385,10 +357,26 @@ export async function assignRequestToEditor(input: {
   editorId: string;
   assignedByUserId: string;
 }) {
-  const request = await prisma.documentRequest.findUnique({
+  const request = (await prismaTracking.documentRequest.findUnique({
     where: { id: input.requestId },
-    select: { status: true, id: true, assignedEditorUserId: true },
-  });
+    select: {
+      id: true,
+      status: true,
+      requestType: true,
+      assignedEditorUserId: true,
+      currentTrackingStageCode: true,
+      cancellationRequestedAt: true,
+    },
+  })) as
+    | {
+        id: string;
+        status: string;
+        requestType: string;
+        assignedEditorUserId: string | null;
+        currentTrackingStageCode: string | null;
+        cancellationRequestedAt: Date | null;
+      }
+    | null;
 
   if (!request) {
     throw new Error("La solicitud ya no existe.");
@@ -397,6 +385,18 @@ export async function assignRequestToEditor(input: {
   if (request.status === "CLOSED" || request.status === "CANCELLED") {
     throw new Error("No se puede asignar una solicitud cerrada o cancelada.");
   }
+
+  if (request.cancellationRequestedAt) {
+    throw new Error("No se puede reasignar una solicitud con cancelacion pendiente.");
+  }
+
+  const requestType = normalizeRequestType(request.requestType);
+  const nextStatus = deriveWorkflowStatusFromTracking({
+    assignedEditorUserId: input.editorId,
+    requestType,
+    stageCode: request.currentTrackingStageCode,
+    waitingReason: "NONE",
+  });
 
   await prismaTracking.documentRequest.update({
     where: { id: input.requestId },
@@ -407,7 +407,7 @@ export async function assignRequestToEditor(input: {
       currentResponsibilityRole: "EDITOR",
       waitingReason: "NONE",
       waitingSince: null,
-      status: "ASSIGNED",
+      status: nextStatus,
     },
   });
 
@@ -415,50 +415,86 @@ export async function assignRequestToEditor(input: {
     documentRequestId: input.requestId,
     actorUserId: input.assignedByUserId,
     activityType: request.assignedEditorUserId ? "REASSIGNED" : "ASSIGNED",
-    statusAfter: "ASSIGNED",
+    trackingStageCode: request.currentTrackingStageCode || "0.1",
+    responsibilityRole: "EDITOR",
+    waitingReason: "NONE",
+    statusAfter: nextStatus,
   });
 }
 
 export async function startRequestWork(input: { requestId: string; actorUser: SessionUser }) {
-  const request = await prisma.documentRequest.findUnique({
+  const request = (await prismaTracking.documentRequest.findUnique({
     where: { id: input.requestId },
-    select: { id: true, assignedEditorUserId: true, status: true },
-  });
+    select: {
+      id: true,
+      assignedEditorUserId: true,
+      requestType: true,
+      status: true,
+      currentTrackingStageCode: true,
+      cancellationRequestedAt: true,
+    },
+  })) as
+    | {
+        id: string;
+        assignedEditorUserId: string | null;
+        requestType: string;
+        status: string;
+        currentTrackingStageCode: string | null;
+        cancellationRequestedAt: Date | null;
+      }
+    | null;
 
   if (!request) {
     throw new Error("La solicitud ya no existe.");
   }
 
-  if (request.status !== "ASSIGNED" && request.status !== "IN_PROGRESS") {
+  if (request.status === "CLOSED" || request.status === "CANCELLED") {
     throw new Error("La solicitud no esta en un estado editable para iniciar trabajo.");
   }
 
-  const canManage =
-    input.actorUser.role === "ADMINISTRATOR" ||
-    request.assignedEditorUserId === input.actorUser.id;
+  if (request.cancellationRequestedAt) {
+    throw new Error("No se puede iniciar trabajo mientras la cancelacion este pendiente.");
+  }
 
-  if (!canManage) {
+  if (!request.assignedEditorUserId || request.assignedEditorUserId !== input.actorUser.id) {
     throw new Error("No tienes permiso para iniciar esta solicitud.");
   }
+
+  const requestType = normalizeRequestType(request.requestType);
+
+  if (hasRequestStarted(request.currentTrackingStageCode, requestType)) {
+    throw new Error("La solicitud ya tiene inicio formal registrado.");
+  }
+
+  const targetStageCode = "0.4";
+  const nextStatus = deriveWorkflowStatusFromTracking({
+    assignedEditorUserId: request.assignedEditorUserId,
+    requestType,
+    stageCode: targetStageCode,
+    waitingReason: "NONE",
+  });
 
   await prismaTracking.documentRequest.update({
     where: { id: input.requestId },
     data: {
+      currentTrackingStageCode: targetStageCode,
       currentResponsibilityRole: "EDITOR",
       waitingReason: "NONE",
       waitingSince: null,
-      status: "IN_PROGRESS",
+      status: nextStatus,
     },
   });
 
-  if (request.status !== "IN_PROGRESS") {
-    await appendRequestActivity({
-      documentRequestId: input.requestId,
-      actorUserId: input.actorUser.id,
-      activityType: "STARTED",
-      statusAfter: "IN_PROGRESS",
-    });
-  }
+  await appendRequestActivity({
+    documentRequestId: input.requestId,
+    actorUserId: input.actorUser.id,
+    activityType: "STARTED",
+    trackingStageCode: targetStageCode,
+    responsibilityRole: "EDITOR",
+    waitingReason: "NONE",
+    note: "Trabajo editorial iniciado.",
+    statusAfter: nextStatus,
+  });
 }
 
 export async function updateRequestProgress(input: {
@@ -466,14 +502,30 @@ export async function updateRequestProgress(input: {
   requestId: string;
   actorUser: SessionUser;
 }) {
-  const request = await prisma.documentRequest.findUnique({
+  const request = (await prismaTracking.documentRequest.findUnique({
     where: { id: input.requestId },
     select: {
       id: true,
       assignedEditorUserId: true,
       status: true,
+      requestType: true,
+      currentTrackingStageCode: true,
+      currentResponsibilityRole: true,
+      waitingReason: true,
+      cancellationRequestedAt: true,
     },
-  });
+  })) as
+    | {
+        id: string;
+        assignedEditorUserId: string | null;
+        status: string;
+        requestType: string;
+        currentTrackingStageCode: string | null;
+        currentResponsibilityRole: string | null;
+        waitingReason: string | null;
+        cancellationRequestedAt: Date | null;
+      }
+    | null;
 
   if (!request) {
     throw new Error("La solicitud ya no existe.");
@@ -481,6 +533,10 @@ export async function updateRequestProgress(input: {
 
   if (request.status === "CLOSED" || request.status === "CANCELLED") {
     throw new Error("No se puede registrar avance en una solicitud cerrada o cancelada.");
+  }
+
+  if (request.cancellationRequestedAt) {
+    throw new Error("No se puede registrar avance mientras la cancelacion este pendiente.");
   }
 
   const canManage =
@@ -491,49 +547,63 @@ export async function updateRequestProgress(input: {
     throw new Error("No tienes permiso para registrar avance en esta solicitud.");
   }
 
-  await prismaTracking.documentRequest.update({
-    where: { id: input.requestId },
-    data: {
-      currentResponsibilityRole:
-        request.status === "OBSERVED" ? request.assignedEditorUserId ? "EDITOR" : "ADMINISTRATOR" : undefined,
-      waitingReason: request.status === "OBSERVED" ? "NONE" : undefined,
-      waitingSince: request.status === "OBSERVED" ? null : undefined,
-      status: request.status === "ASSIGNED" ? "IN_PROGRESS" : request.status,
-    },
-  });
+  if (!hasRequestStarted(request.currentTrackingStageCode, normalizeRequestType(request.requestType))) {
+    throw new Error("Debes iniciar formalmente el trabajo antes de registrar notas.");
+  }
 
   await appendRequestActivity({
     documentRequestId: input.requestId,
     actorUserId: input.actorUser.id,
     activityType: "PROGRESS_UPDATED",
+    trackingStageCode: request.currentTrackingStageCode || "0.1",
+    responsibilityRole: normalizeResponsibilityRole(request.currentResponsibilityRole),
+    waitingReason: normalizeWaitingReason(request.waitingReason),
     note: input.note,
-    statusAfter: request.status === "ASSIGNED" ? "IN_PROGRESS" : normalizeWorkflowStatus(request.status),
+    statusAfter: normalizeWorkflowStatus(request.status),
   });
 }
 
-export async function updateRequestProgressItem(input: {
+export async function updateRequestTracking(input: {
   actorUser: SessionUser;
   note: string;
   requestId: string;
-  activityCode: string;
-  transition: "COMPLETE" | "REOPEN" | "MARK_NOT_APPLICABLE" | "RESTORE_APPLICABLE";
+  responsibilityRole: ResponsibilityRole;
+  stageCode: string;
+  waitingReason: WaitingReason;
 }) {
-  const request = await prisma.documentRequest.findUnique({
+  const request = (await prismaTracking.documentRequest.findUnique({
     where: { id: input.requestId },
     select: {
       id: true,
       assignedEditorUserId: true,
       requestType: true,
       status: true,
+      currentTrackingStageCode: true,
+      waitingReason: true,
+      cancellationRequestedAt: true,
     },
-  });
+  })) as
+    | {
+        id: string;
+        assignedEditorUserId: string | null;
+        requestType: string;
+        status: string;
+        currentTrackingStageCode: string | null;
+        waitingReason: string | null;
+        cancellationRequestedAt: Date | null;
+      }
+    | null;
 
   if (!request) {
     throw new Error("La solicitud ya no existe.");
   }
 
   if (request.status === "CLOSED" || request.status === "CANCELLED") {
-    throw new Error("No se puede modificar el seguimiento en una solicitud cerrada o cancelada.");
+    throw new Error("No se puede actualizar el seguimiento de una solicitud cerrada o cancelada.");
+  }
+
+  if (request.cancellationRequestedAt) {
+    throw new Error("No se puede actualizar el seguimiento mientras la cancelacion este pendiente.");
   }
 
   const canManage =
@@ -541,257 +611,167 @@ export async function updateRequestProgressItem(input: {
     request.assignedEditorUserId === input.actorUser.id;
 
   if (!canManage) {
-    throw new Error("No tienes permiso para actualizar el seguimiento objetivo de esta solicitud.");
+    throw new Error("No tienes permiso para actualizar el seguimiento de esta solicitud.");
   }
 
-  await ensureRequestProgressItems(input.requestId, normalizeRequestType(request.requestType));
+  const requestType = normalizeRequestType(request.requestType);
 
-  const progressItem = await prismaTracking.documentRequestProgressItem.findUnique({
-    where: {
-      documentRequestId_activityCode: {
-        documentRequestId: input.requestId,
-        activityCode: input.activityCode,
-      },
-    },
-  });
-
-  if (!progressItem) {
-    throw new Error("La actividad de seguimiento ya no existe.");
+  if (!hasRequestStarted(request.currentTrackingStageCode, requestType)) {
+    throw new Error("Debes iniciar formalmente el trabajo antes de actualizar el seguimiento.");
   }
 
-  const nextStatus = mapProgressTransitionToStatus(input.transition);
+  const stage = getRequestTrackingStage(input.stageCode, requestType);
+
+  if (stage.sortOrder < 40) {
+    throw new Error("No se puede regresar a etapas previas al inicio formal del trabajo.");
+  }
+
   const now = new Date();
-
-  await prismaTracking.documentRequestProgressItem.update({
-    where: { id: progressItem.id },
-    data: {
-      status: nextStatus,
-      note: input.note,
-      completedAt: nextStatus === "COMPLETED" ? now : null,
-      lastChangedByUserId: input.actorUser.id,
-    },
-  });
-
-  const updatedItems = (await prismaTracking.documentRequestProgressItem.findMany({
-    where: { documentRequestId: input.requestId },
-    orderBy: [{ sortOrder: "asc" }],
-    select: {
-      activityCode: true,
-      activityName: true,
-      phaseCode: true,
-      phaseName: true,
-      sortOrder: true,
-      status: true,
-      weight: true,
-    },
-  })) as Array<{
-    activityCode: string;
-    activityName: string;
-    phaseCode: string;
-    phaseName: string;
-    sortOrder: number;
-    status: string;
-    weight: number;
-  }>;
-
-  const nextWorkflowStatus = deriveWorkflowStatusFromTracking({
+  const nextStatus = deriveWorkflowStatusFromTracking({
     assignedEditorUserId: request.assignedEditorUserId,
-    items: updatedItems.map((item) => ({
-      ...item,
-      status: normalizeProgressItemStatus(item.status),
-    })),
-    waitingReason: "NONE",
+    requestType,
+    stageCode: stage.code,
+    waitingReason: input.waitingReason,
   });
+  const shouldStampRequesterResponse =
+    request.waitingReason === "WAITING_REQUESTER_INFO" && input.waitingReason === "NONE";
 
   await prismaTracking.documentRequest.update({
     where: { id: input.requestId },
     data: {
-      currentResponsibilityRole: request.assignedEditorUserId ? "EDITOR" : "ADMINISTRATOR",
-      waitingReason: "NONE",
-      waitingSince: null,
-      status: nextWorkflowStatus,
+      currentTrackingStageCode: stage.code,
+      currentResponsibilityRole: input.responsibilityRole,
+      waitingReason: input.waitingReason,
+      waitingSince: input.waitingReason === "NONE" ? null : now,
+      lastRequesterResponseAt: shouldStampRequesterResponse ? now : undefined,
+      status: nextStatus,
+      closedAt: nextStatus === "CLOSED" ? now : undefined,
     },
   });
 
   await appendRequestActivity({
     documentRequestId: input.requestId,
     actorUserId: input.actorUser.id,
-    activityType: mapProgressTransitionToActivityType(input.transition),
-    note: `${progressItem.activityCode} - ${progressItem.activityName}. ${input.note}`,
-    statusAfter: nextWorkflowStatus,
+    activityType: "TRACKING_UPDATED",
+    trackingStageCode: stage.code,
+    responsibilityRole: input.responsibilityRole,
+    waitingReason: input.waitingReason,
+    note: input.note,
+    statusAfter: nextStatus,
   });
 }
 
-export async function placeRequestOnHoldForRequester(input: {
-  actorUser: SessionUser;
-  note: string;
-  requestId: string;
-  activityCode: string;
-}) {
-  const request = await prisma.documentRequest.findUnique({
-    where: { id: input.requestId },
-    select: {
-      id: true,
-      assignedEditorUserId: true,
-      requestType: true,
-      status: true,
-    },
-  });
-
-  if (!request) {
-    throw new Error("La solicitud ya no existe.");
-  }
-
-  if (request.status === "CLOSED" || request.status === "CANCELLED") {
-    throw new Error("No se puede dejar en espera una solicitud cerrada o cancelada.");
-  }
-
-  const canManage =
-    input.actorUser.role === "ADMINISTRATOR" ||
-    request.assignedEditorUserId === input.actorUser.id;
-
-  if (!canManage) {
-    throw new Error("No tienes permiso para pausar esta solicitud.");
-  }
-
-  await ensureRequestProgressItems(input.requestId, normalizeRequestType(request.requestType));
-
-  const progressItem = await prismaTracking.documentRequestProgressItem.findUnique({
-    where: {
-      documentRequestId_activityCode: {
-        documentRequestId: input.requestId,
-        activityCode: input.activityCode,
-      },
-    },
-  });
-
-  if (!progressItem) {
-    throw new Error("La actividad de seguimiento ya no existe.");
-  }
-
-  const now = new Date();
-
-  await prismaTracking.documentRequestProgressItem.update({
-    where: { id: progressItem.id },
-    data: {
-      status: "WAITING",
-      note: input.note,
-      completedAt: null,
-      lastChangedByUserId: input.actorUser.id,
-    },
-  });
-
-  await prismaTracking.documentRequest.update({
-    where: { id: input.requestId },
-    data: {
-      currentResponsibilityRole: "REQUESTER",
-      waitingReason: "WAITING_REQUESTER_INFO",
-      waitingSince: now,
-      status: "OBSERVED",
-    },
-  });
-
-  await appendRequestActivity({
-    documentRequestId: input.requestId,
-    actorUserId: input.actorUser.id,
-    activityType: "WAITING_FOR_REQUESTER",
-    note: `${progressItem.activityCode} - ${progressItem.activityName}. ${input.note}`,
-    statusAfter: "OBSERVED",
-  });
-}
-
-export async function registerRequesterResponse(input: {
-  actorUser: SessionUser;
-  note: string;
-  requestId: string;
-  activityCode: string;
-}) {
-  const request = await prisma.documentRequest.findUnique({
-    where: { id: input.requestId },
-    select: {
-      id: true,
-      assignedEditorUserId: true,
-      requestType: true,
-      status: true,
-    },
-  });
-
-  if (!request) {
-    throw new Error("La solicitud ya no existe.");
-  }
-
-  if (request.status === "CLOSED" || request.status === "CANCELLED") {
-    throw new Error("No se puede reactivar una solicitud cerrada o cancelada.");
-  }
-
-  const canManage =
-    input.actorUser.role === "ADMINISTRATOR" ||
-    request.assignedEditorUserId === input.actorUser.id;
-
-  if (!canManage) {
-    throw new Error("No tienes permiso para registrar la respuesta del solicitante.");
-  }
-
-  await ensureRequestProgressItems(input.requestId, normalizeRequestType(request.requestType));
-
-  const progressItem = await prismaTracking.documentRequestProgressItem.findUnique({
-    where: {
-      documentRequestId_activityCode: {
-        documentRequestId: input.requestId,
-        activityCode: input.activityCode,
-      },
-    },
-  });
-
-  if (!progressItem) {
-    throw new Error("La actividad de seguimiento ya no existe.");
-  }
-
-  await prismaTracking.documentRequestProgressItem.update({
-    where: { id: progressItem.id },
-    data: {
-      status: "IN_PROGRESS",
-      note: input.note,
-      completedAt: null,
-      lastChangedByUserId: input.actorUser.id,
-    },
-  });
-
-  await prismaTracking.documentRequest.update({
-    where: { id: input.requestId },
-    data: {
-      currentResponsibilityRole: request.assignedEditorUserId ? "EDITOR" : "ADMINISTRATOR",
-      waitingReason: "NONE",
-      waitingSince: null,
-      lastRequesterResponseAt: new Date(),
-      status: "IN_PROGRESS",
-    },
-  });
-
-  await appendRequestActivity({
-    documentRequestId: input.requestId,
-    actorUserId: input.actorUser.id,
-    activityType: "REQUESTER_RESPONSE_RECORDED",
-    note: `${progressItem.activityCode} - ${progressItem.activityName}. ${input.note}`,
-    statusAfter: "IN_PROGRESS",
-  });
-}
-
-export async function cancelRequest(input: {
+export async function requestCancellation(input: {
   actorUser: SessionUser;
   reason: string;
   requestId: string;
 }) {
-  const request = await prisma.documentRequest.findUnique({
+  const request = (await prismaTracking.documentRequest.findUnique({
     where: { id: input.requestId },
-    select: { id: true, status: true },
-  });
+    select: {
+      id: true,
+      requesterUserId: true,
+      assignedEditorUserId: true,
+      status: true,
+      currentTrackingStageCode: true,
+      currentResponsibilityRole: true,
+      waitingReason: true,
+      cancellationRequestedAt: true,
+    },
+  })) as
+    | {
+        id: string;
+        requesterUserId: string | null;
+        assignedEditorUserId: string | null;
+        status: string;
+        currentTrackingStageCode: string | null;
+        currentResponsibilityRole: string | null;
+        waitingReason: string | null;
+        cancellationRequestedAt: Date | null;
+      }
+    | null;
 
   if (!request) {
     throw new Error("La solicitud ya no existe.");
   }
 
-  if (request.status === "CLOSED" || request.status === "CANCELLED" || request.status === "OFFICIALIZED") {
+  if (
+    request.status === "CLOSED" ||
+    request.status === "CANCELLED" ||
+    request.status === "OFFICIALIZED"
+  ) {
+    throw new Error("La solicitud ya no admite una solicitud de cancelacion.");
+  }
+
+  if (request.cancellationRequestedAt) {
+    throw new Error("La solicitud ya tiene una cancelacion pendiente de decision.");
+  }
+
+  const isRequester =
+    input.actorUser.role === "READER" && request.requesterUserId === input.actorUser.id;
+  const isAssignedEditor =
+    input.actorUser.role === "EDITOR" && request.assignedEditorUserId === input.actorUser.id;
+
+  if (!isRequester && !isAssignedEditor) {
+    throw new Error("No tienes permiso para solicitar la cancelacion de esta solicitud.");
+  }
+
+  await prismaTracking.documentRequest.update({
+    where: { id: input.requestId },
+    data: {
+      cancellationRequestedAt: new Date(),
+      cancellationRequestedByUserId: input.actorUser.id,
+      cancellationRequestReason: input.reason,
+    },
+  });
+
+  await appendRequestActivity({
+    documentRequestId: input.requestId,
+    actorUserId: input.actorUser.id,
+    activityType: "CANCELLATION_REQUESTED",
+    trackingStageCode: request.currentTrackingStageCode || "0.1",
+    responsibilityRole: normalizeResponsibilityRole(request.currentResponsibilityRole),
+    waitingReason: normalizeWaitingReason(request.waitingReason),
+    note: input.reason,
+    statusAfter: normalizeWorkflowStatus(request.status),
+  });
+}
+
+export async function approveCancellation(input: {
+  actorUser: SessionUser;
+  note: string;
+  requestId: string;
+}) {
+  if (input.actorUser.role !== "ADMINISTRATOR") {
+    throw new Error("Solo un administrador puede aprobar cancelaciones.");
+  }
+
+  const request = (await prismaTracking.documentRequest.findUnique({
+    where: { id: input.requestId },
+    select: {
+      id: true,
+      status: true,
+      currentTrackingStageCode: true,
+      cancellationRequestedAt: true,
+    },
+  })) as
+    | {
+        id: string;
+        status: string;
+        currentTrackingStageCode: string | null;
+        cancellationRequestedAt: Date | null;
+      }
+    | null;
+
+  if (!request) {
+    throw new Error("La solicitud ya no existe.");
+  }
+
+  if (!request.cancellationRequestedAt) {
+    throw new Error("La solicitud no tiene una cancelacion pendiente por aprobar.");
+  }
+
+  if (request.status === "CLOSED" || request.status === "CANCELLED") {
     throw new Error("La solicitud ya no puede cancelarse en su estado actual.");
   }
 
@@ -803,6 +783,9 @@ export async function cancelRequest(input: {
       waitingSince: null,
       status: "CANCELLED",
       closedAt: new Date(),
+      cancellationRequestedAt: null,
+      cancellationRequestedByUserId: null,
+      cancellationRequestReason: null,
     },
   });
 
@@ -810,8 +793,70 @@ export async function cancelRequest(input: {
     documentRequestId: input.requestId,
     actorUserId: input.actorUser.id,
     activityType: "CANCELLED",
-    note: input.reason,
+    trackingStageCode: request.currentTrackingStageCode || "0.1",
+    responsibilityRole: "ADMINISTRATOR",
+    waitingReason: "NONE",
+    note: input.note,
     statusAfter: "CANCELLED",
+  });
+}
+
+export async function rejectCancellation(input: {
+  actorUser: SessionUser;
+  note: string;
+  requestId: string;
+}) {
+  if (input.actorUser.role !== "ADMINISTRATOR") {
+    throw new Error("Solo un administrador puede rechazar cancelaciones.");
+  }
+
+  const request = (await prismaTracking.documentRequest.findUnique({
+    where: { id: input.requestId },
+    select: {
+      id: true,
+      status: true,
+      currentTrackingStageCode: true,
+      currentResponsibilityRole: true,
+      waitingReason: true,
+      cancellationRequestedAt: true,
+    },
+  })) as
+    | {
+        id: string;
+        status: string;
+        currentTrackingStageCode: string | null;
+        currentResponsibilityRole: string | null;
+        waitingReason: string | null;
+        cancellationRequestedAt: Date | null;
+      }
+    | null;
+
+  if (!request) {
+    throw new Error("La solicitud ya no existe.");
+  }
+
+  if (!request.cancellationRequestedAt) {
+    throw new Error("La solicitud no tiene una cancelacion pendiente por rechazar.");
+  }
+
+  await prismaTracking.documentRequest.update({
+    where: { id: input.requestId },
+    data: {
+      cancellationRequestedAt: null,
+      cancellationRequestedByUserId: null,
+      cancellationRequestReason: null,
+    },
+  });
+
+  await appendRequestActivity({
+    documentRequestId: input.requestId,
+    actorUserId: input.actorUser.id,
+    activityType: "CANCELLATION_REJECTED",
+    trackingStageCode: request.currentTrackingStageCode || "0.1",
+    responsibilityRole: normalizeResponsibilityRole(request.currentResponsibilityRole),
+    waitingReason: normalizeWaitingReason(request.waitingReason),
+    note: input.note,
+    statusAfter: normalizeWorkflowStatus(request.status),
   });
 }
 
@@ -820,15 +865,30 @@ export async function closeRequest(input: {
   note: string;
   requestId: string;
 }) {
-  const request = await prisma.documentRequest.findUnique({
+  const request = (await prismaTracking.documentRequest.findUnique({
     where: { id: input.requestId },
     select: {
       id: true,
       assignedEditorUserId: true,
       requestType: true,
       status: true,
+      currentTrackingStageCode: true,
+      currentResponsibilityRole: true,
+      waitingReason: true,
+      cancellationRequestedAt: true,
     },
-  });
+  })) as
+    | {
+        id: string;
+        assignedEditorUserId: string | null;
+        requestType: string;
+        status: string;
+        currentTrackingStageCode: string | null;
+        currentResponsibilityRole: string | null;
+        waitingReason: string | null;
+        cancellationRequestedAt: Date | null;
+      }
+    | null;
 
   if (!request) {
     throw new Error("La solicitud ya no existe.");
@@ -836,6 +896,10 @@ export async function closeRequest(input: {
 
   if (request.status === "CLOSED" || request.status === "CANCELLED") {
     throw new Error("La solicitud ya fue cerrada previamente.");
+  }
+
+  if (request.cancellationRequestedAt) {
+    throw new Error("No se puede cerrar una solicitud con cancelacion pendiente.");
   }
 
   const canManage =
@@ -846,49 +910,22 @@ export async function closeRequest(input: {
     throw new Error("No tienes permiso para cerrar esta solicitud.");
   }
 
-  await ensureRequestProgressItems(input.requestId, normalizeRequestType(request.requestType));
-
-  const progressItems = (await prismaTracking.documentRequestProgressItem.findMany({
-    where: { documentRequestId: input.requestId },
-    orderBy: [{ sortOrder: "asc" }],
-    select: {
-      activityCode: true,
-      activityName: true,
-      phaseCode: true,
-      phaseName: true,
-      sortOrder: true,
-      status: true,
-      weight: true,
-    },
-  })) as Array<{
-    activityCode: string;
-    activityName: string;
-    phaseCode: string;
-    phaseName: string;
-    sortOrder: number;
-    status: string;
-    weight: number;
-  }>;
-
-  const progressSnapshot = getRequestProgressSnapshot(
-    progressItems.map((item) => ({
-      ...item,
-      status: normalizeProgressItemStatus(item.status),
-    })),
+  const stage = getRequestTrackingStage(
+    request.currentTrackingStageCode,
+    normalizeRequestType(request.requestType),
   );
 
-  if (progressSnapshot.progressPercent < 100) {
-    throw new Error("Completa el seguimiento objetivo al 100% antes de cerrar la solicitud.");
+  if (stage.progressPercent < 100) {
+    throw new Error("Debes ubicar la solicitud en la etapa 5.3 antes de cerrar formalmente.");
   }
 
   await prismaTracking.documentRequest.update({
     where: { id: input.requestId },
     data: {
-      currentResponsibilityRole: request.assignedEditorUserId ? "EDITOR" : "ADMINISTRATOR",
-      waitingReason: "NONE",
-      waitingSince: null,
       status: "CLOSED",
       closedAt: new Date(),
+      waitingReason: "NONE",
+      waitingSince: null,
     },
   });
 
@@ -896,6 +933,9 @@ export async function closeRequest(input: {
     documentRequestId: input.requestId,
     actorUserId: input.actorUser.id,
     activityType: "CLOSED",
+    trackingStageCode: stage.code,
+    responsibilityRole: normalizeResponsibilityRole(request.currentResponsibilityRole),
+    waitingReason: "NONE",
     note: input.note,
     statusAfter: "CLOSED",
   });
@@ -947,6 +987,7 @@ async function createRequestWithGeneratedCode(input: {
           priority: input.priority,
           requiredDate: input.requiredDate,
           status: input.status,
+          currentTrackingStageCode: "0.1",
           currentResponsibilityRole: "ADMINISTRATOR",
           waitingReason: "NONE",
           attachments: {
@@ -956,19 +997,6 @@ async function createRequestWithGeneratedCode(input: {
               mimeType: attachment.mimeType,
               sizeBytes: attachment.sizeBytes,
               uploadedByUserId: attachment.uploadedByUserId || null,
-            })),
-          },
-          progressItems: {
-            create: getRequestProgressTemplate(input.requestType).map((item) => ({
-              phaseCode: item.phaseCode,
-              phaseName: item.phaseName,
-              activityCode: item.activityCode,
-              activityName: item.activityName,
-              description: item.description,
-              weight: item.weight,
-              sortOrder: item.sortOrder,
-              appliesToRequestType: item.appliesToRequestType,
-              status: "PENDING",
             })),
           },
         },
@@ -1216,8 +1244,8 @@ async function resolvePeopleFromRequests(requests: RequestWithRelations[]) {
           request.createdByUserId,
           request.assignedEditorUserId,
           request.assignedByUserId,
+          request.cancellationRequestedByUserId,
           ...request.activities.map((activity) => activity.actorUserId),
-          ...request.progressItems.map((item) => item.lastChangedByUserId),
         ].filter((value): value is string => Boolean(value)),
       ),
     ),
@@ -1286,7 +1314,8 @@ function sortRequests(requests: RequestWithRelations[]) {
 
     const leftPriority = normalizePriority(left.priority);
     const rightPriority = normalizePriority(right.priority);
-    const priorityDifference = requestPriorityOrder[leftPriority] - requestPriorityOrder[rightPriority];
+    const priorityDifference =
+      requestPriorityOrder[leftPriority] - requestPriorityOrder[rightPriority];
 
     if (priorityDifference !== 0) {
       return priorityDifference;
@@ -1300,16 +1329,10 @@ function mapRequestToListRecord(
   request: RequestWithRelations,
   people: Map<string, { id: string; name: string; username?: string }>,
 ) {
-  const progressItems = request.progressItems.map((item) => ({
-    activityCode: item.activityCode,
-    activityName: item.activityName,
-    phaseCode: item.phaseCode,
-    phaseName: item.phaseName,
-    sortOrder: item.sortOrder,
-    status: normalizeProgressItemStatus(item.status),
-    weight: item.weight,
-  }));
-  const progressSnapshot = getRequestProgressSnapshot(progressItems);
+  const stage = getRequestTrackingStage(
+    request.currentTrackingStageCode,
+    normalizeRequestType(request.requestType),
+  );
 
   return {
     id: request.id,
@@ -1320,7 +1343,7 @@ function mapRequestToListRecord(
     priority: normalizePriority(request.priority),
     requester: resolvePersonName(people, request.requesterUserId, "Solicitante"),
     dueDate: request.requiredDate ? formatDate(request.requiredDate) : "Sin fecha requerida",
-    progressPercent: progressSnapshot.progressPercent,
+    progressPercent: stage.progressPercent,
     currentResponsibilityRole: normalizeResponsibilityRole(request.currentResponsibilityRole),
     waitingReason: normalizeWaitingReason(request.waitingReason),
     status: normalizeWorkflowStatus(request.status),
@@ -1331,23 +1354,21 @@ function mapRequestToDetailRecord(
   request: RequestWithRelations,
   people: Map<string, { id: string; name: string; username?: string }>,
 ) {
-  const progressItems = request.progressItems.map((item) => mapRequestProgressItemRecord(item, people));
-  const progressSnapshot = getRequestProgressSnapshot(
-    request.progressItems.map((item) => ({
-      activityCode: item.activityCode,
-      activityName: item.activityName,
-      phaseCode: item.phaseCode,
-      phaseName: item.phaseName,
-      sortOrder: item.sortOrder,
-      status: normalizeProgressItemStatus(item.status),
-      weight: item.weight,
-    })),
+  const requestType = normalizeRequestType(request.requestType);
+  const currentStage = getRequestTrackingStage(request.currentTrackingStageCode, requestType);
+  const stageCatalog = getRequestTrackingStages(requestType);
+  const trackingActivities = request.activities.filter((activity) => Boolean(activity.trackingStageCode));
+  const currentStageStartedAt = trackingActivities[0]?.createdAt || request.createdAt;
+  const startedActivity = request.activities.find((activity) => activity.activityType === "STARTED");
+  const currentStageVisits = Math.max(
+    trackingActivities.filter((activity) => activity.trackingStageCode === currentStage.code).length,
+    1,
   );
 
   return {
     id: request.id,
     code: request.requestCode,
-    requestType: normalizeRequestType(request.requestType),
+    requestType,
     title: request.title,
     description: request.description,
     justification: request.justification || undefined,
@@ -1370,17 +1391,30 @@ function mapRequestToDetailRecord(
     assignedBy: request.assignedByUserId
       ? resolvePersonRecord(people, request.assignedByUserId)
       : undefined,
-    progressPercent: progressSnapshot.progressPercent,
-    currentPhaseCode: progressSnapshot.currentPhaseCode,
-    currentPhaseName: progressSnapshot.currentPhaseName,
-    currentActivityCode: progressSnapshot.currentActivityCode,
-    currentActivityName: progressSnapshot.currentActivityName,
+    startedAt: startedActivity ? formatDateTime(startedActivity.createdAt) : undefined,
+    progressPercent: currentStage.progressPercent,
+    currentPhaseCode: currentStage.phaseCode,
+    currentPhaseName: currentStage.phaseName,
+    currentActivityCode: currentStage.code,
+    currentActivityName: currentStage.activityName,
+    currentActivityDescription: currentStage.description || undefined,
     currentResponsibilityRole: normalizeResponsibilityRole(request.currentResponsibilityRole),
     waitingReason: normalizeWaitingReason(request.waitingReason),
     waitingSince: request.waitingSince ? formatDateTime(request.waitingSince) : undefined,
     lastRequesterResponseAt: request.lastRequesterResponseAt
       ? formatDateTime(request.lastRequesterResponseAt)
       : undefined,
+    hasPendingCancellation: Boolean(request.cancellationRequestedAt),
+    cancellationRequestedAt: request.cancellationRequestedAt
+      ? formatDateTime(request.cancellationRequestedAt)
+      : undefined,
+    cancellationRequestedBy: request.cancellationRequestedByUserId
+      ? resolvePersonRecord(people, request.cancellationRequestedByUserId)
+      : undefined,
+    cancellationRequestReason: request.cancellationRequestReason || undefined,
+    currentStageElapsedLabel: formatElapsedTime(currentStageStartedAt),
+    currentStageVisits,
+    totalElapsedLabel: formatElapsedTime(request.createdAt),
     process: request.suggestedProcess
       ? {
           id: request.suggestedProcess.id,
@@ -1403,14 +1437,17 @@ function mapRequestToDetailRecord(
       uploadedAt: formatDateTime(attachment.uploadedAt),
       downloadHref: `/api/request-attachments/${attachment.id}`,
     })),
-    activities: request.activities.map((activity) => mapRequestActivityRecord(activity, people)),
-    progressItems,
+    activities: request.activities.map((activity) =>
+      mapRequestActivityRecord(activity, people, requestType),
+    ),
+    stageCatalog,
   } satisfies RequestDetailRecord;
 }
 
 function mapRequestActivityRecord(
-  activity: RequestWithRelations["activities"][number],
+  activity: RequestActivityRow,
   people: Map<string, { id: string; name: string; username?: string }>,
+  requestType: RequestType,
 ): RequestActivityRecord {
   return {
     id: activity.id,
@@ -1418,29 +1455,14 @@ function mapRequestActivityRecord(
     createdAt: formatDateTime(activity.createdAt),
     note: activity.note || undefined,
     statusAfter: activity.statusAfter ? normalizeWorkflowStatus(activity.statusAfter) : undefined,
-    type: normalizeRequestActivityType(activity.activityType),
-  };
-}
-
-function mapRequestProgressItemRecord(
-  item: RequestWithRelations["progressItems"][number],
-  people: Map<string, { id: string; name: string; username?: string }>,
-): RequestProgressItemRecord {
-  return {
-    id: item.id,
-    phaseCode: item.phaseCode,
-    phaseName: item.phaseName,
-    activityCode: item.activityCode,
-    activityName: item.activityName,
-    description: item.description || undefined,
-    weight: item.weight,
-    status: normalizeProgressItemStatus(item.status),
-    note: item.note || undefined,
-    completedAt: item.completedAt ? formatDateTime(item.completedAt) : undefined,
-    lastChangedAt: formatDateTime(item.lastChangedAt),
-    lastChangedBy: item.lastChangedByUserId
-      ? resolvePersonRecord(people, item.lastChangedByUserId)
+    responsibilityRole: activity.responsibilityRole
+      ? normalizeResponsibilityRole(activity.responsibilityRole)
       : undefined,
+    waitingReason: activity.waitingReason ? normalizeWaitingReason(activity.waitingReason) : undefined,
+    trackingStage: activity.trackingStageCode
+      ? getRequestTrackingStage(activity.trackingStageCode, requestType)
+      : undefined,
+    type: normalizeRequestActivityType(activity.activityType),
   };
 }
 
@@ -1506,7 +1528,10 @@ function normalizeRequestActivityType(activityType: string): RequestActivityType
     case "ASSIGNED":
     case "REASSIGNED":
     case "STARTED":
+    case "CANCELLATION_REQUESTED":
+    case "CANCELLATION_REJECTED":
     case "PROGRESS_UPDATED":
+    case "TRACKING_UPDATED":
     case "STEP_COMPLETED":
     case "STEP_REOPENED":
     case "STEP_MARKED_NOT_APPLICABLE":
@@ -1518,19 +1543,6 @@ function normalizeRequestActivityType(activityType: string): RequestActivityType
       return activityType;
     default:
       return "CREATED";
-  }
-}
-
-function normalizeProgressItemStatus(status: string): RequestProgressItemStatus {
-  switch (status) {
-    case "IN_PROGRESS":
-    case "COMPLETED":
-    case "RETURNED":
-    case "WAITING":
-    case "NOT_APPLICABLE":
-      return status;
-    default:
-      return "PENDING";
   }
 }
 
@@ -1554,70 +1566,6 @@ function normalizeWaitingReason(reason: string | null): WaitingReason {
     default:
       return "NONE";
   }
-}
-
-function mapProgressTransitionToStatus(
-  transition: "COMPLETE" | "REOPEN" | "MARK_NOT_APPLICABLE" | "RESTORE_APPLICABLE",
-): RequestProgressItemStatus {
-  switch (transition) {
-    case "COMPLETE":
-      return "COMPLETED";
-    case "REOPEN":
-      return "RETURNED";
-    case "MARK_NOT_APPLICABLE":
-      return "NOT_APPLICABLE";
-    case "RESTORE_APPLICABLE":
-      return "PENDING";
-  }
-}
-
-function mapProgressTransitionToActivityType(
-  transition: "COMPLETE" | "REOPEN" | "MARK_NOT_APPLICABLE" | "RESTORE_APPLICABLE",
-): RequestActivityType {
-  switch (transition) {
-    case "COMPLETE":
-      return "STEP_COMPLETED";
-    case "REOPEN":
-      return "STEP_REOPENED";
-    case "MARK_NOT_APPLICABLE":
-      return "STEP_MARKED_NOT_APPLICABLE";
-    case "RESTORE_APPLICABLE":
-      return "STEP_RESTORED";
-  }
-}
-
-async function ensureRequestProgressItems(requestId: string, requestType: RequestType) {
-  const existingItems = (await prismaTracking.documentRequestProgressItem.findMany({
-    where: { documentRequestId: requestId },
-    select: { activityCode: true },
-  })) as Array<{ activityCode: string }>;
-  const existingCodes = new Set(existingItems.map((item) => item.activityCode));
-  const missingItems = getRequestProgressTemplate(requestType).filter(
-    (item) => !existingCodes.has(item.activityCode),
-  );
-
-  if (missingItems.length === 0) {
-    return;
-  }
-
-  await Promise.all(
-    missingItems.map((item) =>
-      prismaTracking.documentRequestProgressItem.create({
-        data: {
-          documentRequestId: requestId,
-          phaseCode: item.phaseCode,
-          phaseName: item.phaseName,
-          activityCode: item.activityCode,
-          activityName: item.activityName,
-          description: item.description,
-          weight: item.weight,
-          sortOrder: item.sortOrder,
-          appliesToRequestType: item.appliesToRequestType,
-          status: "PENDING",
-        },
-      }),
-    ),
-  );
 }
 
 function normalizeBoardFilters(filters: RequestBoardFilters): RequestBoardFilters {
@@ -1684,13 +1632,19 @@ async function appendRequestActivity(input: {
   activityType: RequestActivityType;
   documentRequestId: string;
   note?: string;
+  responsibilityRole?: ResponsibilityRole;
   statusAfter?: WorkflowStatus;
+  trackingStageCode?: string;
+  waitingReason?: WaitingReason;
 }) {
-  await prisma.documentRequestActivity.create({
+  await prismaTracking.documentRequestActivity.create({
     data: {
       documentRequestId: input.documentRequestId,
       actorUserId: input.actorUserId || null,
       activityType: input.activityType,
+      trackingStageCode: input.trackingStageCode || null,
+      responsibilityRole: input.responsibilityRole || null,
+      waitingReason: input.waitingReason || null,
       note: input.note || null,
       statusAfter: input.statusAfter || null,
     },
@@ -1717,11 +1671,25 @@ function formatDateTime(date: Date) {
   }).format(date);
 }
 
+function formatElapsedTime(date: Date) {
+  const diffMs = Math.max(Date.now() - date.getTime(), 0);
+  const totalMinutes = Math.floor(diffMs / 60000);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return `${days} d ${hours} h`;
+  }
+
+  if (totalHours > 0) {
+    return `${totalHours} h ${minutes} min`;
+  }
+
+  return `${Math.max(totalMinutes, 1)} min`;
+}
+
 function isUniqueConstraintError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "P2002"
-  );
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }

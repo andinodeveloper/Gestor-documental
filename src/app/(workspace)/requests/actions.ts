@@ -4,20 +4,20 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { canCreateDocumentRequests } from "@/lib/auth/permissions";
+import type { ResponsibilityRole, RequestPriority, RequestType, WaitingReason } from "@/lib/types";
 import { requireAuthorizedUser } from "@/lib/server/auth";
 import {
+  approveCancellation,
   assignRequestToEditor,
-  cancelRequest,
   closeRequest,
   createDocumentRequest,
   isRequestCapableReader,
-  placeRequestOnHoldForRequester,
-  registerRequesterResponse,
+  rejectCancellation,
+  requestCancellation,
   startRequestWork,
   updateRequestProgress,
-  updateRequestProgressItem,
+  updateRequestTracking,
 } from "@/lib/server/request-service";
-import type { RequestPriority, RequestType } from "@/lib/types";
 
 export interface RequestActionState {
   status: "idle" | "error";
@@ -163,23 +163,11 @@ export async function createRequestAction(
   redirect(returnPath);
 }
 
-export async function assignRequestAction(formData: FormData) {
-  const result = await runAssignRequest(formData);
-
-  if (result.status === "error") {
-    throw new Error(result.message);
-  }
-}
-
 export async function assignRequestStateAction(
   _previousState: RequestMutationState = initialMutationState,
   formData: FormData,
 ): Promise<RequestMutationState> {
   void _previousState;
-  return runAssignRequest(formData);
-}
-
-async function runAssignRequest(formData: FormData): Promise<RequestMutationState> {
   const user = await requireAuthorizedUser("/requests");
 
   if (user.role !== "ADMINISTRATOR") {
@@ -213,20 +201,11 @@ async function runAssignRequest(formData: FormData): Promise<RequestMutationStat
     };
   }
 
-  revalidatePath("/requests");
-  revalidatePath("/dashboard");
+  revalidateRequestPages();
 
   return {
     status: "success",
   };
-}
-
-export async function startRequestAction(formData: FormData) {
-  const result = await runStartRequest(formData);
-
-  if (result.status === "error") {
-    throw new Error(result.message);
-  }
 }
 
 export async function startRequestStateAction(
@@ -234,10 +213,6 @@ export async function startRequestStateAction(
   formData: FormData,
 ): Promise<RequestMutationState> {
   void _previousState;
-  return runStartRequest(formData);
-}
-
-async function runStartRequest(formData: FormData): Promise<RequestMutationState> {
   const user = await requireAuthorizedUser("/requests");
   const requestId = readText(formData.get("requestId"));
 
@@ -261,20 +236,11 @@ async function runStartRequest(formData: FormData): Promise<RequestMutationState
     };
   }
 
-  revalidatePath("/requests");
-  revalidatePath("/dashboard");
+  revalidateRequestPages();
 
   return {
     status: "success",
   };
-}
-
-export async function updateRequestProgressAction(formData: FormData) {
-  const result = await runUpdateRequestProgress(formData);
-
-  if (result.status === "error") {
-    throw new Error(result.message);
-  }
 }
 
 export async function updateRequestProgressStateAction(
@@ -282,10 +248,6 @@ export async function updateRequestProgressStateAction(
   formData: FormData,
 ): Promise<RequestMutationState> {
   void _previousState;
-  return runUpdateRequestProgress(formData);
-}
-
-async function runUpdateRequestProgress(formData: FormData): Promise<RequestMutationState> {
   const user = await requireAuthorizedUser("/requests");
   const requestId = readText(formData.get("requestId"));
   const note = readText(formData.get("note"));
@@ -318,32 +280,34 @@ async function runUpdateRequestProgress(formData: FormData): Promise<RequestMuta
   };
 }
 
-export async function updateRequestProgressItemStateAction(
+export async function updateRequestTrackingStateAction(
   _previousState: RequestMutationState = initialMutationState,
   formData: FormData,
 ): Promise<RequestMutationState> {
   void _previousState;
-
   const user = await requireAuthorizedUser("/requests");
   const requestId = readText(formData.get("requestId"));
-  const activityCode = readText(formData.get("activityCode"));
+  const stageCode = readText(formData.get("stageCode"));
+  const responsibilityRole = readResponsibilityRole(formData.get("responsibilityRole"));
+  const waitingReason = readWaitingReason(formData.get("waitingReason"));
   const note = readText(formData.get("note"));
-  const transition = readProgressTransition(formData.get("transition"));
 
-  if (!requestId || !activityCode || !note || !transition) {
+  if (!requestId || !stageCode || !responsibilityRole || !waitingReason || !note) {
     return {
       status: "error",
-      message: "Debes indicar la solicitud, la actividad y el detalle del cambio.",
+      message:
+        "Debes indicar la solicitud, la etapa actual, la responsabilidad y el comentario del seguimiento.",
     };
   }
 
   try {
-    await updateRequestProgressItem({
+    await updateRequestTracking({
       actorUser: user,
       note,
       requestId,
-      activityCode,
-      transition,
+      responsibilityRole,
+      stageCode,
+      waitingReason,
     });
   } catch (error) {
     return {
@@ -351,7 +315,7 @@ export async function updateRequestProgressItemStateAction(
       message:
         error instanceof Error
           ? error.message
-          : "No fue posible actualizar el seguimiento objetivo.",
+          : "No fue posible actualizar el seguimiento de la solicitud.",
     };
   }
 
@@ -362,126 +326,24 @@ export async function updateRequestProgressItemStateAction(
   };
 }
 
-export async function placeRequestOnHoldForRequesterStateAction(
+export async function requestCancellationStateAction(
   _previousState: RequestMutationState = initialMutationState,
   formData: FormData,
 ): Promise<RequestMutationState> {
   void _previousState;
-
   const user = await requireAuthorizedUser("/requests");
-  const requestId = readText(formData.get("requestId"));
-  const activityCode = readText(formData.get("activityCode"));
-  const note = readText(formData.get("note"));
-
-  if (!requestId || !activityCode || !note) {
-    return {
-      status: "error",
-      message: "Debes indicar la solicitud, la actividad y la informacion solicitada.",
-    };
-  }
-
-  try {
-    await placeRequestOnHoldForRequester({
-      actorUser: user,
-      note,
-      requestId,
-      activityCode,
-    });
-  } catch (error) {
-    return {
-      status: "error",
-      message:
-        error instanceof Error ? error.message : "No fue posible pausar la solicitud.",
-    };
-  }
-
-  revalidateRequestPages();
-
-  return {
-    status: "success",
-  };
-}
-
-export async function registerRequesterResponseStateAction(
-  _previousState: RequestMutationState = initialMutationState,
-  formData: FormData,
-): Promise<RequestMutationState> {
-  void _previousState;
-
-  const user = await requireAuthorizedUser("/requests");
-  const requestId = readText(formData.get("requestId"));
-  const activityCode = readText(formData.get("activityCode"));
-  const note = readText(formData.get("note"));
-
-  if (!requestId || !activityCode || !note) {
-    return {
-      status: "error",
-      message: "Debes indicar la solicitud, la actividad y la respuesta registrada.",
-    };
-  }
-
-  try {
-    await registerRequesterResponse({
-      actorUser: user,
-      note,
-      requestId,
-      activityCode,
-    });
-  } catch (error) {
-    return {
-      status: "error",
-      message:
-        error instanceof Error
-          ? error.message
-          : "No fue posible registrar la respuesta del solicitante.",
-    };
-  }
-
-  revalidateRequestPages();
-
-  return {
-    status: "success",
-  };
-}
-
-export async function cancelRequestAction(formData: FormData) {
-  const result = await runCancelRequest(formData);
-
-  if (result.status === "error") {
-    throw new Error(result.message);
-  }
-}
-
-export async function cancelRequestStateAction(
-  _previousState: RequestMutationState = initialMutationState,
-  formData: FormData,
-): Promise<RequestMutationState> {
-  void _previousState;
-  return runCancelRequest(formData);
-}
-
-async function runCancelRequest(formData: FormData): Promise<RequestMutationState> {
-  const user = await requireAuthorizedUser("/requests");
-
-  if (user.role !== "ADMINISTRATOR") {
-    return {
-      status: "error",
-      message: "Solo un administrador puede cancelar solicitudes.",
-    };
-  }
-
   const requestId = readText(formData.get("requestId"));
   const reason = readText(formData.get("reason"));
 
   if (!requestId || !reason) {
     return {
       status: "error",
-      message: "Debes indicar la solicitud y la justificacion de cancelacion.",
+      message: "Debes indicar la solicitud y la justificacion de la cancelacion solicitada.",
     };
   }
 
   try {
-    await cancelRequest({
+    await requestCancellation({
       requestId,
       actorUser: user,
       reason,
@@ -490,7 +352,7 @@ async function runCancelRequest(formData: FormData): Promise<RequestMutationStat
     return {
       status: "error",
       message:
-        error instanceof Error ? error.message : "No fue posible cancelar la solicitud.",
+        error instanceof Error ? error.message : "No fue posible solicitar la cancelacion.",
     };
   }
 
@@ -501,12 +363,94 @@ async function runCancelRequest(formData: FormData): Promise<RequestMutationStat
   };
 }
 
-export async function closeRequestAction(formData: FormData) {
-  const result = await runCloseRequest(formData);
+export async function approveCancellationStateAction(
+  _previousState: RequestMutationState = initialMutationState,
+  formData: FormData,
+): Promise<RequestMutationState> {
+  void _previousState;
+  const user = await requireAuthorizedUser("/requests");
 
-  if (result.status === "error") {
-    throw new Error(result.message);
+  if (user.role !== "ADMINISTRATOR") {
+    return {
+      status: "error",
+      message: "Solo un administrador puede aprobar cancelaciones.",
+    };
   }
+
+  const requestId = readText(formData.get("requestId"));
+  const note = readText(formData.get("note"));
+
+  if (!requestId || !note) {
+    return {
+      status: "error",
+      message: "Debes indicar la solicitud y la aprobacion de cancelacion.",
+    };
+  }
+
+  try {
+    await approveCancellation({
+      requestId,
+      actorUser: user,
+      note,
+    });
+  } catch (error) {
+    return {
+      status: "error",
+      message:
+        error instanceof Error ? error.message : "No fue posible aprobar la cancelacion.",
+    };
+  }
+
+  revalidateRequestPages();
+
+  return {
+    status: "success",
+  };
+}
+
+export async function rejectCancellationStateAction(
+  _previousState: RequestMutationState = initialMutationState,
+  formData: FormData,
+): Promise<RequestMutationState> {
+  void _previousState;
+  const user = await requireAuthorizedUser("/requests");
+
+  if (user.role !== "ADMINISTRATOR") {
+    return {
+      status: "error",
+      message: "Solo un administrador puede rechazar cancelaciones.",
+    };
+  }
+
+  const requestId = readText(formData.get("requestId"));
+  const note = readText(formData.get("note"));
+
+  if (!requestId || !note) {
+    return {
+      status: "error",
+      message: "Debes indicar la solicitud y el rechazo de cancelacion.",
+    };
+  }
+
+  try {
+    await rejectCancellation({
+      requestId,
+      actorUser: user,
+      note,
+    });
+  } catch (error) {
+    return {
+      status: "error",
+      message:
+        error instanceof Error ? error.message : "No fue posible rechazar la cancelacion.",
+    };
+  }
+
+  revalidateRequestPages();
+
+  return {
+    status: "success",
+  };
 }
 
 export async function closeRequestStateAction(
@@ -514,10 +458,6 @@ export async function closeRequestStateAction(
   formData: FormData,
 ): Promise<RequestMutationState> {
   void _previousState;
-  return runCloseRequest(formData);
-}
-
-async function runCloseRequest(formData: FormData): Promise<RequestMutationState> {
   const user = await requireAuthorizedUser("/requests");
   const requestId = readText(formData.get("requestId"));
   const note = readText(formData.get("note"));
@@ -569,15 +509,19 @@ function readPriority(value: FormDataEntryValue | null): RequestPriority | null 
   return text === "Alta" || text === "Media" || text === "Baja" ? text : null;
 }
 
-function readProgressTransition(
-  value: FormDataEntryValue | null,
-): "COMPLETE" | "REOPEN" | "MARK_NOT_APPLICABLE" | "RESTORE_APPLICABLE" | null {
+function readResponsibilityRole(value: FormDataEntryValue | null): ResponsibilityRole | null {
+  const text = readText(value);
+  return text === "ADMINISTRATOR" || text === "EDITOR" || text === "REQUESTER" ? text : null;
+}
+
+function readWaitingReason(value: FormDataEntryValue | null): WaitingReason | null {
   const text = readText(value);
 
-  return text === "COMPLETE" ||
-    text === "REOPEN" ||
-    text === "MARK_NOT_APPLICABLE" ||
-    text === "RESTORE_APPLICABLE"
+  return text === "NONE" ||
+    text === "WAITING_REQUESTER_INFO" ||
+    text === "WAITING_INTERNAL_RESPONSE" ||
+    text === "WAITING_REVIEW" ||
+    text === "WAITING_APPROVAL"
     ? text
     : null;
 }

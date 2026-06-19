@@ -4,15 +4,15 @@ import type { ReactNode } from "react";
 import { useActionState, useEffect, useState } from "react";
 
 import {
+  approveCancellationStateAction,
   assignRequestStateAction,
-  cancelRequestStateAction,
   closeRequestStateAction,
-  placeRequestOnHoldForRequesterStateAction,
-  registerRequesterResponseStateAction,
+  rejectCancellationStateAction,
+  requestCancellationStateAction,
   startRequestStateAction,
   type RequestMutationState,
-  updateRequestProgressItemStateAction,
   updateRequestProgressStateAction,
+  updateRequestTrackingStateAction,
 } from "@/app/(workspace)/requests/actions";
 import { SubmitButton } from "@/components/submit-button";
 import { StatusChip, workflowTone } from "@/components/status-chip";
@@ -20,7 +20,6 @@ import type { SessionUser } from "@/lib/auth/types";
 import {
   requestActivityLabels,
   requestPriorityLabels,
-  requestProgressStatusLabels,
   requestTypeLabels,
   responsibilityRoleLabels,
   waitingReasonLabels,
@@ -28,11 +27,8 @@ import {
 } from "@/lib/presenters";
 import type {
   EditorOptionRecord,
-  RequestActivityRecord,
   RequestDetailRecord,
   RequestPriority,
-  RequestProgressItemRecord,
-  RequestProgressItemStatus,
   ResponsibilityRole,
   WaitingReason,
   WorkflowStatus,
@@ -52,20 +48,20 @@ const initialMutationState: RequestMutationState = {
 };
 
 type BoardTabId = "active" | "mine" | "pending" | "closed" | "cancelled";
-type ProgressTransition = "COMPLETE" | "REOPEN" | "MARK_NOT_APPLICABLE" | "RESTORE_APPLICABLE";
 type ActionModalKind =
   | "assign"
-  | "cancel"
+  | "request-cancel"
+  | "approve-cancel"
+  | "reject-cancel"
   | "note"
   | "close"
-  | "progress-transition"
-  | "wait-requester"
-  | "requester-response";
+  | "tracking";
 
 type RequestsWorkspaceBoardProps = {
   canAssignRequests: boolean;
   currentUser: Pick<SessionUser, "id" | "role">;
   editors: EditorOptionRecord[];
+  initialDetailRequestId?: string;
   requests: RequestDetailRecord[];
 };
 
@@ -80,20 +76,22 @@ type BoardTab = {
 type ActionModalState = {
   kind: ActionModalKind;
   requestId: string;
-  activityCode?: string;
-  activityName?: string;
-  transition?: ProgressTransition;
 };
 
 export function RequestsWorkspaceBoard({
   canAssignRequests,
   currentUser,
   editors,
+  initialDetailRequestId,
   requests,
 }: RequestsWorkspaceBoardProps) {
   const tabs = buildBoardTabs(requests, currentUser);
   const [activeTab, setActiveTab] = useState<BoardTabId>(tabs[0]?.id ?? "active");
-  const [detailRequestId, setDetailRequestId] = useState<string | null>(null);
+  const [detailRequestId, setDetailRequestId] = useState<string | null>(
+    initialDetailRequestId && requests.some((request) => request.id === initialDetailRequestId)
+      ? initialDetailRequestId
+      : null,
+  );
   const [actionModal, setActionModal] = useState<ActionModalState | null>(null);
 
   useEffect(() => {
@@ -138,6 +136,16 @@ export function RequestsWorkspaceBoard({
   return (
     <>
       <section className="space-y-4">
+        <div className="rounded-[20px] border border-line bg-accent/5 px-5 py-4">
+          <p className="text-sm font-semibold text-foreground">Como operar el seguimiento</p>
+          <p className="mt-2 text-sm leading-6 text-slate">
+            La solicitud siempre tiene una sola etapa vigente. Usa{" "}
+            <span className="font-semibold text-foreground">Gestionar seguimiento</span> para
+            seleccionar la etapa actual, actualizar la responsabilidad, registrar una espera y
+            dejar el comentario en bitacora.
+          </p>
+        </div>
+
         <div className="surface-card overflow-hidden">
           <div className="border-b border-line px-5 py-4">
             <div className="flex flex-wrap gap-2">
@@ -231,7 +239,7 @@ function RequestTable({
 
   return (
     <div className="subtle-scroll overflow-x-auto">
-      <table className="min-w-[1180px] w-full border-collapse">
+      <table className="min-w-[1240px] w-full border-collapse">
         <thead>
           <tr className="border-b border-line bg-panel-muted/45 text-left">
             <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate">
@@ -294,8 +302,8 @@ function RequestTable({
                 <div className="space-y-3">
                   <div>
                     <div className="mb-2 flex items-center justify-between gap-3 text-xs text-slate">
-                      <span>{request.progressPercent}% objetivo</span>
-                      <span>{request.currentActivityCode || "Sin actividad"}</span>
+                      <span>{request.progressPercent}% acumulado</span>
+                      <span>{request.currentActivityCode || "Sin etapa"}</span>
                     </div>
                     <ProgressBar value={request.progressPercent} />
                   </div>
@@ -310,7 +318,7 @@ function RequestTable({
                     ) : null}
                   </div>
                   <p className="text-sm leading-6 text-slate">
-                    {request.currentActivityName || "Sin actividad activa"}
+                    {request.currentActivityName || "Sin etapa activa"}
                   </p>
                 </div>
               </td>
@@ -319,9 +327,10 @@ function RequestTable({
                   <StatusChip tone={workflowTone(workflowStatusLabels[request.status])}>
                     {workflowStatusLabels[request.status]}
                   </StatusChip>
-                  <StatusChip tone={priorityTone(request.priority)}>
-                    {priorityLabel(request.priority)}
-                  </StatusChip>
+                  {request.hasPendingCancellation ? (
+                    <StatusChip tone="red">Cancelacion pendiente</StatusChip>
+                  ) : null}
+                  <StatusChip tone={priorityTone(request.priority)}>{priorityLabel(request.priority)}</StatusChip>
                 </div>
               </td>
               <td className="px-5 py-4 align-top text-sm leading-6 text-slate">
@@ -333,7 +342,7 @@ function RequestTable({
                   onClick={() => onOpenDetail(request.id)}
                   className="button-secondary"
                 >
-                  Ver detalle
+                  Gestionar seguimiento
                 </button>
               </td>
             </tr>
@@ -358,19 +367,39 @@ function RequestDetailModal({
   request: RequestDetailRecord;
 }) {
   const isFinalStatus = request.status === "CLOSED" || request.status === "CANCELLED";
-  const canManageAssignedRequest =
-    currentUser.role === "ADMINISTRATOR" || request.assignedEditor?.id === currentUser.id;
+  const currentStage =
+    request.stageCatalog.find((stage) => stage.code === request.currentActivityCode) ??
+    request.stageCatalog[0];
+  const hasStarted = Boolean(request.startedAt) || Boolean(currentStage && currentStage.sortOrder >= 40);
+  const isAssignedEditor = request.assignedEditor?.id === currentUser.id;
+  const isRequesterOwner =
+    currentUser.role === "READER" && request.requester?.id === currentUser.id;
+  const canManageAssignedRequest = currentUser.role === "ADMINISTRATOR" || isAssignedEditor;
   const canStartRequest =
-    canManageAssignedRequest &&
-    (request.status === "ASSIGNED" || request.status === "IN_PROGRESS");
-  const canAddNote =
-    canManageAssignedRequest && !isFinalStatus && request.status !== "PENDING_ASSIGNMENT";
-  const latestProgress = findLatestProgress(request.activities);
+    isAssignedEditor && request.status === "ASSIGNED" && !hasStarted && !request.hasPendingCancellation;
+  const canUpdateTracking =
+    canManageAssignedRequest && hasStarted && !isFinalStatus && !request.hasPendingCancellation;
+  const canAddNote = canUpdateTracking;
+  const canCloseRequest =
+    canManageAssignedRequest && hasStarted && !isFinalStatus && !request.hasPendingCancellation;
+  const canAssignOrReassign =
+    canAssignRequests && !isFinalStatus && !request.hasPendingCancellation;
+  const canRequestCancellation =
+    !isFinalStatus &&
+    !request.hasPendingCancellation &&
+    request.status !== "OFFICIALIZED" &&
+    (isAssignedEditor || isRequesterOwner);
+  const canModerateCancellation =
+    currentUser.role === "ADMINISTRATOR" && request.hasPendingCancellation && !isFinalStatus;
+  const latestActivity = request.activities[0];
   const actionCount =
-    Number(canAssignRequests && !isFinalStatus) +
+    Number(canAssignOrReassign) +
     Number(canStartRequest) +
+    Number(canUpdateTracking) +
     Number(canAddNote) +
-    Number(canManageAssignedRequest && !isFinalStatus);
+    Number(canCloseRequest) +
+    Number(canRequestCancellation) +
+    Number(canModerateCancellation ? 2 : 0);
 
   return (
     <ModalShell maxWidthClass="max-w-[1240px]" onClose={onClose}>
@@ -382,6 +411,9 @@ function RequestDetailModal({
             <StatusChip tone={workflowTone(workflowStatusLabels[request.status])}>
               {workflowStatusLabels[request.status]}
             </StatusChip>
+            {request.hasPendingCancellation ? (
+              <StatusChip tone="red">Cancelacion pendiente</StatusChip>
+            ) : null}
             <StatusChip tone={priorityTone(request.priority)}>{priorityLabel(request.priority)}</StatusChip>
             <StatusChip tone="slate">{requestTypeLabels[request.requestType]}</StatusChip>
             <StatusChip tone={responsibilityTone(request.currentResponsibilityRole)}>
@@ -394,7 +426,7 @@ function RequestDetailModal({
         </button>
       </div>
 
-      <div className="subtle-scroll overflow-y-auto px-6 py-5">
+      <div className="subtle-scroll min-h-0 flex-1 overflow-y-auto px-6 py-5">
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_360px]">
           <div className="space-y-4">
             <section className="rounded-[20px] border border-line bg-white/82 p-4">
@@ -407,6 +439,9 @@ function RequestDetailModal({
                 />
                 <MetadataItem label="Creada" value={request.createdAt} />
                 <MetadataItem label="Actualizada" value={request.updatedAt} />
+                {request.startedAt ? (
+                  <MetadataItem label="Inicio formal" value={request.startedAt} />
+                ) : null}
               </div>
             </section>
 
@@ -445,8 +480,14 @@ function RequestDetailModal({
                     {request.progressPercent}%
                   </h3>
                   <p className="mt-2 text-sm leading-6 text-slate">
-                    {request.currentPhaseName || "Sin fase activa"} · {request.currentActivityName || "Sin actividad activa"}
+                    {request.currentPhaseName || "Sin fase activa"} ·{" "}
+                    {request.currentActivityName || "Sin etapa activa"}
                   </p>
+                  {request.currentActivityDescription ? (
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate">
+                      {request.currentActivityDescription}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <StatusChip tone={responsibilityTone(request.currentResponsibilityRole)}>
@@ -463,48 +504,63 @@ function RequestDetailModal({
               </div>
 
               <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <MetadataItem label="Actividad actual" value={request.currentActivityCode || "Sin codigo"} />
-                <MetadataItem label="Fase actual" value={request.currentPhaseCode || "Sin fase"} />
-                <MetadataItem
-                  label="Espera activa"
-                  value={
-                    request.waitingReason === "NONE"
-                      ? "No"
-                      : request.waitingSince
-                        ? `Si, desde ${request.waitingSince}`
-                        : "Si"
-                  }
-                />
-                <MetadataItem
-                  label="Ultima respuesta solicitante"
-                  value={request.lastRequesterResponseAt || "Sin registro"}
-                />
+                <MetadataItem label="Etapa actual" value={request.currentActivityCode || "Sin codigo"} />
+                <MetadataItem label="Tiempo en etapa" value={request.currentStageElapsedLabel || "Sin dato"} />
+                <MetadataItem label="Veces en etapa" value={String(request.currentStageVisits)} />
+                <MetadataItem label="Tiempo total" value={request.totalElapsedLabel} />
               </div>
+            </section>
 
-              <div className="mt-5 space-y-4">
-                {groupProgressItemsByPhase(request.progressItems).map(([phaseName, phaseItems]) => (
-                  <div key={phaseName} className="rounded-[18px] border border-line bg-panel-muted/35 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-semibold text-foreground">{phaseName}</p>
-                      <StatusChip tone="slate">
-                        {phaseItems.filter((item) => item.status === "COMPLETED").length}/
-                        {phaseItems.length} completadas
-                      </StatusChip>
-                    </div>
+            <section className="rounded-[20px] border border-line bg-white/82 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="section-label">Matriz de seguimiento</p>
+                  <h3 className="mt-2 text-lg font-semibold tracking-[-0.02em] text-foreground">
+                    Catalogo maestro de etapas
+                  </h3>
+                </div>
+                <StatusChip tone="slate">
+                  Etapa vigente: {request.currentActivityCode || "Sin etapa"}
+                </StatusChip>
+              </div>
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-line bg-panel-muted/40 text-left text-[10px] uppercase tracking-[0.16em] text-slate">
+                      <th className="px-3 py-3 font-semibold">Fase</th>
+                      <th className="px-3 py-3 font-semibold">Etapa</th>
+                      <th className="px-3 py-3 font-semibold">Descripcion</th>
+                      <th className="px-3 py-3 font-semibold">Avance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {request.stageCatalog.map((stage) => {
+                      const isCurrent = stage.code === request.currentActivityCode;
 
-                    <div className="mt-4 space-y-3">
-                      {phaseItems.map((item) => (
-                        <ProgressItemCard
-                          key={item.id}
-                          canManage={canManageAssignedRequest && !isFinalStatus}
-                          item={item}
-                          onOpenAction={onOpenAction}
-                          request={request}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ))}
+                      return (
+                        <tr
+                          key={stage.code}
+                          className={isCurrent ? "border-b border-line bg-accent/6" : "border-b border-line"}
+                        >
+                          <td className="px-3 py-3 align-top text-slate">{stage.phaseName}</td>
+                          <td className="px-3 py-3 align-top">
+                            <p className="font-semibold text-foreground">
+                              {stage.code} · {stage.activityName}
+                            </p>
+                          </td>
+                          <td className="px-3 py-3 align-top text-slate">
+                            {stage.description || "Sin descripcion"}
+                          </td>
+                          <td className="px-3 py-3 align-top">
+                            <StatusChip tone={isCurrent ? "accent" : "slate"}>
+                              {stage.progressPercent}%
+                            </StatusChip>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </section>
 
@@ -528,14 +584,34 @@ function RequestDetailModal({
                     >
                       <div className="flex flex-wrap items-center gap-2">
                         <StatusChip tone="accent">{requestActivityLabels[activity.type]}</StatusChip>
+                        {activity.trackingStage ? (
+                          <StatusChip tone="slate">
+                            {activity.trackingStage.code} · {activity.trackingStage.progressPercent}%
+                          </StatusChip>
+                        ) : null}
+                        {activity.responsibilityRole ? (
+                          <StatusChip tone={responsibilityTone(activity.responsibilityRole)}>
+                            {responsibilityRoleLabels[activity.responsibilityRole]}
+                          </StatusChip>
+                        ) : null}
+                        {activity.waitingReason && activity.waitingReason !== "NONE" ? (
+                          <StatusChip tone={waitingTone(activity.waitingReason)}>
+                            {waitingReasonLabels[activity.waitingReason]}
+                          </StatusChip>
+                        ) : null}
                         {activity.statusAfter ? (
                           <StatusChip tone={workflowTone(workflowStatusLabels[activity.statusAfter])}>
                             {workflowStatusLabels[activity.statusAfter]}
                           </StatusChip>
                         ) : null}
                       </div>
-                      <p className="mt-3 text-sm leading-6 text-slate">
-                        {activity.note || "Movimiento registrado sin nota adicional."}
+                      {activity.trackingStage ? (
+                        <p className="mt-3 text-sm leading-6 text-foreground">
+                          {activity.trackingStage.activityName}
+                        </p>
+                      ) : null}
+                      <p className="mt-2 text-sm leading-6 text-slate">
+                        {activity.note || "Movimiento registrado sin comentario adicional."}
                       </p>
                       <p className="mt-3 text-[10px] uppercase tracking-[0.18em] text-slate">
                         {activity.actor?.name || "Sistema"} - {activity.createdAt}
@@ -564,16 +640,16 @@ function RequestDetailModal({
                 </div>
               )}
 
-              {latestProgress ? (
+              {latestActivity ? (
                 <div className="mt-4 rounded-[18px] border border-line bg-white/80 px-4 py-4">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate">
                     Ultimo movimiento visible
                   </p>
                   <p className="mt-2 text-sm leading-6 text-foreground">
-                    {latestProgress.note || requestActivityLabels[latestProgress.type]}
+                    {latestActivity.note || requestActivityLabels[latestActivity.type]}
                   </p>
                   <p className="mt-3 text-[10px] uppercase tracking-[0.18em] text-slate">
-                    {latestProgress.actor?.name || "Sistema"} - {latestProgress.createdAt}
+                    {latestActivity.actor?.name || "Sistema"} - {latestActivity.createdAt}
                   </p>
                 </div>
               ) : null}
@@ -599,12 +675,29 @@ function RequestDetailModal({
                   </p>
                   {request.waitingSince ? <p className="mt-1">Desde {request.waitingSince}</p> : null}
                 </div>
-                {currentUser.role === "EDITOR" &&
-                request.assignedEditor &&
-                request.assignedEditor.id !== currentUser.id ? (
-                  <p className="text-sm leading-6 text-slate">
-                    Editor responsable actual: {request.assignedEditor.name}.
+                <div className="rounded-[18px] border border-line bg-panel-muted/45 px-4 py-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate">
+                    Ultima respuesta del solicitante
                   </p>
+                  <p className="mt-2 font-semibold text-foreground">
+                    {request.lastRequesterResponseAt || "Sin registro"}
+                  </p>
+                </div>
+                {request.hasPendingCancellation ? (
+                  <div className="rounded-[18px] border border-red/18 bg-red-soft px-4 py-4">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-red">
+                      Cancelacion pendiente
+                    </p>
+                    <p className="mt-2 font-semibold text-foreground">
+                      Solicitada por {request.cancellationRequestedBy?.name || "Usuario no resuelto"}
+                    </p>
+                    {request.cancellationRequestedAt ? (
+                      <p className="mt-1">Registrada el {request.cancellationRequestedAt}</p>
+                    ) : null}
+                    <p className="mt-3 text-sm leading-6 text-slate">
+                      {request.cancellationRequestReason || "Sin justificacion registrada."}
+                    </p>
+                  </div>
                 ) : null}
               </div>
             </section>
@@ -649,7 +742,7 @@ function RequestDetailModal({
               </div>
 
               <div className="mt-4 space-y-3">
-                {canAssignRequests && !isFinalStatus ? (
+                {canAssignOrReassign ? (
                   <button
                     type="button"
                     className="button-primary w-full"
@@ -660,7 +753,17 @@ function RequestDetailModal({
                 ) : null}
 
                 {canStartRequest ? (
-                  <StartRequestInlineAction requestId={request.id} status={request.status} />
+                  <StartRequestInlineAction requestId={request.id} />
+                ) : null}
+
+                {canUpdateTracking ? (
+                  <button
+                    type="button"
+                    className="button-secondary w-full"
+                    onClick={() => onOpenAction({ kind: "tracking" })}
+                  >
+                    Actualizar seguimiento
+                  </button>
                 ) : null}
 
                 {canAddNote ? (
@@ -673,7 +776,7 @@ function RequestDetailModal({
                   </button>
                 ) : null}
 
-                {canManageAssignedRequest && !isFinalStatus ? (
+                {canCloseRequest ? (
                   <button
                     type="button"
                     className="button-secondary w-full"
@@ -683,19 +786,40 @@ function RequestDetailModal({
                   </button>
                 ) : null}
 
-                {canAssignRequests && !isFinalStatus ? (
+                {canRequestCancellation ? (
                   <button
                     type="button"
                     className="w-full rounded-full border border-red bg-white px-4 py-2.5 text-sm font-semibold text-red hover:bg-red-soft/70"
-                    onClick={() => onOpenAction({ kind: "cancel" })}
+                    onClick={() => onOpenAction({ kind: "request-cancel" })}
                   >
-                    Cancelar justificadamente
+                    Solicitar cancelacion
+                  </button>
+                ) : null}
+
+                {canModerateCancellation ? (
+                  <button
+                    type="button"
+                    className="button-primary w-full"
+                    onClick={() => onOpenAction({ kind: "approve-cancel" })}
+                  >
+                    Aprobar cancelacion
+                  </button>
+                ) : null}
+
+                {canModerateCancellation ? (
+                  <button
+                    type="button"
+                    className="button-secondary w-full"
+                    onClick={() => onOpenAction({ kind: "reject-cancel" })}
+                  >
+                    Rechazar cancelacion
                   </button>
                 ) : null}
 
                 {actionCount === 0 ? (
                   <p className="text-sm leading-6 text-slate">
-                    No hay acciones operativas disponibles para tu rol o para el estado actual de esta solicitud.
+                    No hay acciones operativas disponibles para tu rol o para el estado actual de
+                    esta solicitud.
                   </p>
                 ) : null}
               </div>
@@ -704,151 +828,6 @@ function RequestDetailModal({
         </div>
       </div>
     </ModalShell>
-  );
-}
-
-function ProgressItemCard({
-  canManage,
-  item,
-  onOpenAction,
-  request,
-}: {
-  canManage: boolean;
-  item: RequestProgressItemRecord;
-  onOpenAction: (modalState: Omit<ActionModalState, "requestId">) => void;
-  request: RequestDetailRecord;
-}) {
-  const canWaitForRequester = item.status !== "COMPLETED" && item.status !== "NOT_APPLICABLE";
-
-  return (
-    <div className="rounded-[18px] border border-line bg-white/90 px-4 py-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate">
-            {item.activityCode} · {item.weight}%
-          </p>
-          <p className="mt-2 font-semibold tracking-[-0.02em] text-foreground">{item.activityName}</p>
-          {item.description ? (
-            <p className="mt-2 text-sm leading-6 text-slate">{item.description}</p>
-          ) : null}
-          {item.note ? <p className="mt-2 text-sm leading-6 text-slate">Nota: {item.note}</p> : null}
-          <p className="mt-2 text-xs uppercase tracking-[0.14em] text-slate">
-            {item.lastChangedBy?.name || "Sistema"} - {item.lastChangedAt}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <StatusChip tone={progressStatusTone(item.status)}>
-            {requestProgressStatusLabels[item.status]}
-          </StatusChip>
-          {item.completedAt ? <StatusChip tone="green">Completada {item.completedAt}</StatusChip> : null}
-        </div>
-      </div>
-
-      {canManage ? (
-        <div className="mt-4 flex flex-wrap gap-2">
-          {item.status === "COMPLETED" ? (
-            <button
-              type="button"
-              className="button-secondary"
-              onClick={() =>
-                onOpenAction({
-                  kind: "progress-transition",
-                  activityCode: item.activityCode,
-                  activityName: item.activityName,
-                  transition: "REOPEN",
-                })
-              }
-            >
-              Reabrir actividad
-            </button>
-          ) : null}
-
-          {(item.status === "PENDING" ||
-            item.status === "IN_PROGRESS" ||
-            item.status === "RETURNED" ||
-            item.status === "WAITING") ? (
-            <button
-              type="button"
-              className="button-secondary"
-              onClick={() =>
-                onOpenAction({
-                  kind: "progress-transition",
-                  activityCode: item.activityCode,
-                  activityName: item.activityName,
-                  transition: "COMPLETE",
-                })
-              }
-            >
-              Completar actividad
-            </button>
-          ) : null}
-
-          {item.status === "NOT_APPLICABLE" ? (
-            <button
-              type="button"
-              className="button-secondary"
-              onClick={() =>
-                onOpenAction({
-                  kind: "progress-transition",
-                  activityCode: item.activityCode,
-                  activityName: item.activityName,
-                  transition: "RESTORE_APPLICABLE",
-                })
-              }
-            >
-              Restaurar aplicacion
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="button-secondary"
-              onClick={() =>
-                onOpenAction({
-                  kind: "progress-transition",
-                  activityCode: item.activityCode,
-                  activityName: item.activityName,
-                  transition: "MARK_NOT_APPLICABLE",
-                })
-              }
-            >
-              Marcar no aplica
-            </button>
-          )}
-
-          {canWaitForRequester && item.status !== "WAITING" ? (
-            <button
-              type="button"
-              className="button-secondary"
-              onClick={() =>
-                onOpenAction({
-                  kind: "wait-requester",
-                  activityCode: item.activityCode,
-                  activityName: item.activityName,
-                })
-              }
-            >
-              Esperar solicitante
-            </button>
-          ) : null}
-
-          {item.status === "WAITING" && request.currentResponsibilityRole === "REQUESTER" ? (
-            <button
-              type="button"
-              className="button-secondary"
-              onClick={() =>
-                onOpenAction({
-                  kind: "requester-response",
-                  activityCode: item.activityCode,
-                  activityName: item.activityName,
-                })
-              }
-            >
-              Registrar respuesta
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -876,23 +855,67 @@ function RequestActionModal({
     );
   }
 
-  if (modalState.kind === "cancel") {
+  if (modalState.kind === "request-cancel") {
     return (
       <ModalShell maxWidthClass="max-w-[560px]" onClose={onClose} zIndexClass="z-[70]">
         <ActionModalHeader
-          title="Cancelar solicitud"
-          description={`Registra la causa justificada para cancelar ${request.code}.`}
+          title="Solicitar cancelacion"
+          description={`Registra la causa justificada para solicitar la cancelacion de ${request.code}.`}
           onClose={onClose}
         />
         <RequestTextareaActionForm
-          action={cancelRequestStateAction}
+          action={requestCancellationStateAction}
           fieldName="reason"
-          idleLabel="Cancelar solicitud"
+          idleLabel="Solicitar cancelacion"
           onSuccess={onClose}
-          pendingLabel="Cancelando..."
-          placeholder="Registra la justificacion administrativa de la cancelacion."
+          pendingLabel="Solicitando..."
+          placeholder="Registra la justificacion para que el administrador revise la cancelacion."
           requestId={request.id}
           tone="danger"
+        />
+      </ModalShell>
+    );
+  }
+
+  if (modalState.kind === "approve-cancel") {
+    return (
+      <ModalShell maxWidthClass="max-w-[560px]" onClose={onClose} zIndexClass="z-[70]">
+        <ActionModalHeader
+          title="Aprobar cancelacion"
+          description={`Confirma la cancelacion administrativa de ${request.code}.`}
+          onClose={onClose}
+        />
+        <RequestTextareaActionForm
+          action={approveCancellationStateAction}
+          fieldName="note"
+          idleLabel="Aprobar cancelacion"
+          onSuccess={onClose}
+          pendingLabel="Aprobando..."
+          placeholder="Registra la aprobacion administrativa de la cancelacion."
+          requestId={request.id}
+          tone="danger"
+        />
+      </ModalShell>
+    );
+  }
+
+  if (modalState.kind === "reject-cancel") {
+    return (
+      <ModalShell maxWidthClass="max-w-[560px]" onClose={onClose} zIndexClass="z-[70]">
+        <ActionModalHeader
+          title="Rechazar cancelacion"
+          description={`Documenta la razon por la que la solicitud ${request.code} debe continuar activa.`}
+          onClose={onClose}
+        />
+        <RequestTextareaActionForm
+          action={rejectCancellationStateAction}
+          fieldName="note"
+          idleLabel="Rechazar cancelacion"
+          onSuccess={onClose}
+          pendingLabel="Rechazando..."
+          placeholder="Describe la razon administrativa para rechazar la cancelacion."
+          requestId={request.id}
+          tone="default"
         />
       </ModalShell>
     );
@@ -903,7 +926,7 @@ function RequestActionModal({
       <ModalShell maxWidthClass="max-w-[560px]" onClose={onClose} zIndexClass="z-[70]">
         <ActionModalHeader
           title="Cerrar solicitud"
-          description={`Documenta el cierre operativo de ${request.code}.`}
+          description={`Confirma el cierre formal de ${request.code}.`}
           onClose={onClose}
         />
         <RequestTextareaActionForm
@@ -920,78 +943,15 @@ function RequestActionModal({
     );
   }
 
-  if (modalState.kind === "progress-transition" && modalState.activityCode && modalState.transition) {
+  if (modalState.kind === "tracking") {
     return (
-      <ModalShell maxWidthClass="max-w-[560px]" onClose={onClose} zIndexClass="z-[70]">
+      <ModalShell maxWidthClass="max-w-[620px]" onClose={onClose} zIndexClass="z-[70]">
         <ActionModalHeader
-          title={progressTransitionTitle(modalState.transition)}
-          description={`${modalState.activityCode} - ${modalState.activityName || "Actividad de seguimiento"}.`}
+          title="Actualizar seguimiento"
+          description={`Selecciona la etapa vigente y registra la responsabilidad actual de ${request.code}.`}
           onClose={onClose}
         />
-        <RequestTextareaActionForm
-          action={updateRequestProgressItemStateAction}
-          extraHiddenFields={{
-            activityCode: modalState.activityCode,
-            transition: modalState.transition,
-          }}
-          fieldName="note"
-          idleLabel={progressTransitionButtonLabel(modalState.transition)}
-          onSuccess={onClose}
-          pendingLabel="Guardando cambio..."
-          placeholder="Documenta el motivo del cambio de estado en esta actividad."
-          requestId={request.id}
-          tone="default"
-        />
-      </ModalShell>
-    );
-  }
-
-  if (modalState.kind === "wait-requester" && modalState.activityCode) {
-    return (
-      <ModalShell maxWidthClass="max-w-[560px]" onClose={onClose} zIndexClass="z-[70]">
-        <ActionModalHeader
-          title="Pausar por solicitante"
-          description={`${modalState.activityCode} - ${modalState.activityName || "Actividad de seguimiento"}.`}
-          onClose={onClose}
-        />
-        <RequestTextareaActionForm
-          action={placeRequestOnHoldForRequesterStateAction}
-          extraHiddenFields={{
-            activityCode: modalState.activityCode,
-          }}
-          fieldName="note"
-          idleLabel="Marcar espera"
-          onSuccess={onClose}
-          pendingLabel="Guardando espera..."
-          placeholder="Indica exactamente la informacion o respuesta que se esta solicitando."
-          requestId={request.id}
-          tone="default"
-        />
-      </ModalShell>
-    );
-  }
-
-  if (modalState.kind === "requester-response" && modalState.activityCode) {
-    return (
-      <ModalShell maxWidthClass="max-w-[560px]" onClose={onClose} zIndexClass="z-[70]">
-        <ActionModalHeader
-          title="Registrar respuesta del solicitante"
-          description={`${modalState.activityCode} - ${modalState.activityName || "Actividad de seguimiento"}.`}
-          onClose={onClose}
-        />
-        <RequestTextareaActionForm
-          action={registerRequesterResponseStateAction}
-          extraHiddenFields={{
-            activityCode: modalState.activityCode,
-          }}
-          fieldName="note"
-          idleLabel="Registrar respuesta"
-          onSuccess={onClose}
-          pendingLabel="Registrando..."
-          placeholder="Resume la respuesta recibida y confirma la reactivacion del trabajo."
-          requestId={request.id}
-          tone="default"
-        />
+        <UpdateTrackingForm onSuccess={onClose} request={request} />
       </ModalShell>
     );
   }
@@ -1065,9 +1025,110 @@ function AssignRequestForm({
   );
 }
 
+function UpdateTrackingForm({
+  onSuccess,
+  request,
+}: {
+  onSuccess: () => void;
+  request: RequestDetailRecord;
+}) {
+  const [state, formAction] = useActionState(updateRequestTrackingStateAction, initialMutationState);
+  const availableStages = request.stageCatalog.filter((stage) => stage.sortOrder >= 40);
+
+  useEffect(() => {
+    if (state.status === "success") {
+      onSuccess();
+    }
+  }, [onSuccess, state.status]);
+
+  return (
+    <form action={formAction} className="space-y-4 px-6 py-5">
+      <input type="hidden" name="requestId" value={request.id} />
+
+      <label className="block space-y-2">
+        <span className="text-sm font-semibold text-foreground">Etapa vigente</span>
+        <select
+          name="stageCode"
+          className="field-input"
+          defaultValue={request.currentActivityCode || availableStages[0]?.code || ""}
+          required
+        >
+          {availableStages.map((stage) => (
+            <option key={stage.code} value={stage.code}>
+              {stage.code} - {stage.activityName} ({stage.progressPercent}%)
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="block space-y-2">
+          <span className="text-sm font-semibold text-foreground">Responsabilidad actual</span>
+          <select
+            name="responsibilityRole"
+            className="field-input"
+            defaultValue={request.currentResponsibilityRole}
+            required
+          >
+            {(
+              ["ADMINISTRATOR", "EDITOR", "REQUESTER"] as const satisfies ResponsibilityRole[]
+            ).map((role) => (
+              <option key={role} value={role}>
+                {responsibilityRoleLabels[role]}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block space-y-2">
+          <span className="text-sm font-semibold text-foreground">Motivo de espera</span>
+          <select
+            name="waitingReason"
+            className="field-input"
+            defaultValue={request.waitingReason}
+            required
+          >
+            {(
+              [
+                "NONE",
+                "WAITING_REQUESTER_INFO",
+                "WAITING_INTERNAL_RESPONSE",
+                "WAITING_REVIEW",
+                "WAITING_APPROVAL",
+              ] as const satisfies WaitingReason[]
+            ).map((reason) => (
+              <option key={reason} value={reason}>
+                {waitingReasonLabels[reason]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <label className="block space-y-2">
+        <span className="text-sm font-semibold text-foreground">Comentario del movimiento</span>
+        <textarea
+          name="note"
+          className="min-h-[130px] w-full rounded-[20px] border border-line bg-white px-4 py-3 text-sm leading-6 text-foreground outline-none focus:border-accent focus:shadow-[0_0_0_4px_rgba(15,77,93,0.08)]"
+          placeholder="Describe por que la solicitud queda en esta etapa y quien debe darle continuidad."
+          required
+        />
+      </label>
+
+      <MutationMessage state={state} />
+      <div className="flex justify-end">
+        <SubmitButton
+          idleLabel="Guardar seguimiento"
+          pendingLabel="Guardando seguimiento..."
+          className="button-primary disabled:cursor-wait disabled:opacity-70"
+        />
+      </div>
+    </form>
+  );
+}
+
 function RequestTextareaActionForm({
   action,
-  extraHiddenFields,
   fieldName,
   idleLabel,
   onSuccess,
@@ -1077,7 +1138,6 @@ function RequestTextareaActionForm({
   tone,
 }: {
   action: (previousState: RequestMutationState, formData: FormData) => Promise<RequestMutationState>;
-  extraHiddenFields?: Record<string, string>;
   fieldName: "note" | "reason";
   idleLabel: string;
   onSuccess: () => void;
@@ -1097,17 +1157,11 @@ function RequestTextareaActionForm({
   return (
     <form action={formAction} className="space-y-4 px-6 py-5">
       <input type="hidden" name="requestId" value={requestId} />
-      {extraHiddenFields
-        ? Object.entries(extraHiddenFields).map(([key, value]) => (
-            <input key={key} type="hidden" name={key} value={value} />
-          ))
-        : null}
       <label className="block space-y-2">
-        <span className="text-sm font-semibold text-foreground">Detalle</span>
+        <span className="text-sm font-semibold text-foreground">Comentario</span>
         <textarea
           name={fieldName}
-          className="field-textarea"
-          rows={4}
+          className="min-h-[130px] w-full rounded-[20px] border border-line bg-white px-4 py-3 text-sm leading-6 text-foreground outline-none focus:border-accent focus:shadow-[0_0_0_4px_rgba(15,77,93,0.08)]"
           placeholder={placeholder}
           required
         />
@@ -1119,7 +1173,7 @@ function RequestTextareaActionForm({
           pendingLabel={pendingLabel}
           className={
             tone === "danger"
-              ? "rounded-full border border-red bg-white px-4 py-2.5 text-sm font-semibold text-red disabled:cursor-wait disabled:opacity-70"
+              ? "w-full rounded-full border border-red bg-white px-4 py-2.5 text-sm font-semibold text-red disabled:cursor-wait disabled:opacity-70"
               : "button-primary disabled:cursor-wait disabled:opacity-70"
           }
         />
@@ -1130,10 +1184,8 @@ function RequestTextareaActionForm({
 
 function StartRequestInlineAction({
   requestId,
-  status,
 }: {
   requestId: string;
-  status: WorkflowStatus;
 }) {
   const [state, formAction] = useActionState(startRequestStateAction, initialMutationState);
 
@@ -1141,8 +1193,8 @@ function StartRequestInlineAction({
     <form action={formAction} className="space-y-3">
       <input type="hidden" name="requestId" value={requestId} />
       <SubmitButton
-        idleLabel={status === "IN_PROGRESS" ? "Mantener en gestion" : "Iniciar atencion"}
-        pendingLabel="Actualizando estado..."
+        idleLabel="Iniciar trabajo"
+        pendingLabel="Actualizando..."
         className="button-secondary w-full disabled:cursor-wait disabled:opacity-70"
       />
       <MutationMessage state={state} />
@@ -1156,27 +1208,55 @@ function MutationMessage({ state }: { state: RequestMutationState }) {
   }
 
   return (
-    <div className="rounded-[18px] border border-red/18 bg-red-soft px-4 py-3 text-sm leading-6 text-red">
+    <p className="rounded-[16px] border border-red/18 bg-red-soft px-4 py-3 text-sm leading-6 text-red">
       {state.message}
+    </p>
+  );
+}
+
+function ModalShell({
+  children,
+  maxWidthClass,
+  onClose,
+  zIndexClass = "z-[60]",
+}: {
+  children: ReactNode;
+  maxWidthClass: string;
+  onClose: () => void;
+  zIndexClass?: string;
+}) {
+  return (
+    <div className={`fixed inset-0 ${zIndexClass} flex items-center justify-center px-4 py-6`}>
+      <button
+        type="button"
+        aria-label="Cerrar modal"
+        className="absolute inset-0 bg-[#0f1720]/55 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
+      <div
+        className={`relative flex max-h-[90vh] w-full flex-col overflow-hidden rounded-[28px] border border-line bg-white/96 shadow-[0_32px_80px_rgba(15,23,32,0.24)] ${maxWidthClass}`}
+      >
+        {children}
+      </div>
     </div>
   );
 }
 
 function ActionModalHeader({
+  title,
   description,
   onClose,
-  title,
 }: {
+  title: string;
   description: string;
   onClose: () => void;
-  title: string;
 }) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-line px-6 py-5">
       <div>
-        <p className="section-label">Accion sobre solicitud</p>
+        <p className="section-label">Seguimiento</p>
         <h3 className="panel-title mt-2">{title}</h3>
-        <p className="mt-3 text-sm leading-6 text-slate">{description}</p>
+        <p className="mt-2 text-sm leading-6 text-slate">{description}</p>
       </div>
       <button type="button" className="button-secondary" onClick={onClose}>
         Cerrar
@@ -1189,120 +1269,20 @@ function MetadataItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-[18px] border border-line bg-panel-muted/45 px-4 py-4">
       <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate">{label}</p>
-      <p className="mt-2 text-sm leading-6 text-foreground">{value}</p>
-    </div>
-  );
-}
-
-function ModalShell({
-  children,
-  maxWidthClass,
-  onClose,
-  zIndexClass = "z-50",
-}: {
-  children: ReactNode;
-  maxWidthClass: string;
-  onClose: () => void;
-  zIndexClass?: string;
-}) {
-  return (
-    <div className={`fixed inset-0 ${zIndexClass} flex items-center justify-center px-4 py-4`}>
-      <button
-        type="button"
-        aria-label="Cerrar modal"
-        className="absolute inset-0 bg-foreground/18 backdrop-blur-sm"
-        onClick={onClose}
-      />
-      <div
-        className={`surface-card relative z-10 flex max-h-[calc(100dvh-2rem)] w-full ${maxWidthClass} flex-col overflow-hidden`}
-      >
-        {children}
-      </div>
+      <p className="mt-2 text-sm font-semibold leading-6 text-foreground">{value}</p>
     </div>
   );
 }
 
 function ProgressBar({ value }: { value: number }) {
   return (
-    <div className="h-2 rounded-full bg-panel-muted/80">
+    <div className="h-2.5 overflow-hidden rounded-full bg-panel-muted/80">
       <div
-        className="h-full rounded-full bg-accent transition-[width]"
-        style={{ width: `${Math.max(0, Math.min(value, 100))}%` }}
+        className="h-full rounded-full bg-accent transition-[width] duration-300"
+        style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
       />
     </div>
   );
-}
-
-function buildBoardTabs(
-  requests: RequestDetailRecord[],
-  currentUser: Pick<SessionUser, "id" | "role">,
-): BoardTab[] {
-  const activeRequests = requests.filter((request) => activeWorkflowStatuses.includes(request.status));
-  const pendingRequests = requests.filter((request) => request.status === "PENDING_ASSIGNMENT");
-  const closedRequests = requests.filter((request) => request.status === "CLOSED");
-  const cancelledRequests = requests.filter((request) => request.status === "CANCELLED");
-  const tabs: BoardTab[] = [
-    {
-      id: "active",
-      label: "Activas",
-      description: "Solicitudes que ya salieron de la cola de asignacion y siguen en gestion.",
-      emptyMessage: "No hay solicitudes activas con los filtros actuales.",
-      requests: activeRequests,
-    },
-  ];
-
-  if (currentUser.role === "EDITOR") {
-    tabs.push({
-      id: "mine",
-      label: "Asignadas a mi",
-      description: "Vista concentrada de las solicitudes que te corresponden como editor responsable.",
-      emptyMessage: "No tienes solicitudes asignadas activas con los filtros actuales.",
-      requests: activeRequests.filter((request) => request.assignedEditor?.id === currentUser.id),
-    });
-  }
-
-  tabs.push(
-    {
-      id: "pending",
-      label: "Pendientes de asignacion",
-      description: "Solicitudes nuevas que aun no tienen editor responsable.",
-      emptyMessage: "No hay solicitudes pendientes de asignacion con los filtros actuales.",
-      requests: pendingRequests,
-    },
-    {
-      id: "closed",
-      label: "Cerradas",
-      description: "Solicitudes que completaron el proceso y llegaron al cierre formal.",
-      emptyMessage: "No hay solicitudes cerradas con los filtros actuales.",
-      requests: closedRequests,
-    },
-    {
-      id: "cancelled",
-      label: "Canceladas",
-      description: "Solicitudes detenidas por una causa justificada y registradas en bitacora.",
-      emptyMessage: "No hay solicitudes canceladas con los filtros actuales.",
-      requests: cancelledRequests,
-    },
-  );
-
-  return tabs;
-}
-
-function groupProgressItemsByPhase(items: RequestProgressItemRecord[]) {
-  const groups = new Map<string, RequestProgressItemRecord[]>();
-
-  for (const item of items) {
-    const group = groups.get(item.phaseName);
-
-    if (group) {
-      group.push(item);
-      continue;
-    }
-
-    groups.set(item.phaseName, [item]);
-  }
-
-  return [...groups.entries()];
 }
 
 function priorityLabel(priority?: RequestPriority) {
@@ -1311,94 +1291,91 @@ function priorityLabel(priority?: RequestPriority) {
 
 function priorityTone(priority?: RequestPriority) {
   if (priority === "Alta") {
-    return "red";
+    return "red" as const;
   }
 
   if (priority === "Baja") {
-    return "green";
+    return "green" as const;
   }
 
-  return "amber";
-}
-
-function progressStatusTone(status: RequestProgressItemStatus) {
-  switch (status) {
-    case "COMPLETED":
-      return "green";
-    case "IN_PROGRESS":
-      return "amber";
-    case "RETURNED":
-      return "red";
-    case "WAITING":
-      return "accent";
-    case "NOT_APPLICABLE":
-      return "slate";
-    default:
-      return "slate";
-  }
+  return "amber" as const;
 }
 
 function responsibilityTone(role: ResponsibilityRole) {
   switch (role) {
     case "EDITOR":
-      return "amber";
+      return "accent" as const;
     case "REQUESTER":
-      return "red";
+      return "amber" as const;
     default:
-      return "accent";
+      return "slate" as const;
   }
 }
 
 function waitingTone(reason: WaitingReason) {
-  switch (reason) {
-    case "WAITING_REQUESTER_INFO":
-      return "red";
-    case "WAITING_INTERNAL_RESPONSE":
-    case "WAITING_REVIEW":
-    case "WAITING_APPROVAL":
-      return "amber";
-    default:
-      return "slate";
+  if (reason === "NONE") {
+    return "green" as const;
   }
+
+  if (reason === "WAITING_REQUESTER_INFO") {
+    return "amber" as const;
+  }
+
+  return "slate" as const;
 }
 
-function progressTransitionTitle(transition: ProgressTransition) {
-  switch (transition) {
-    case "COMPLETE":
-      return "Completar actividad";
-    case "REOPEN":
-      return "Reabrir actividad";
-    case "MARK_NOT_APPLICABLE":
-      return "Marcar no aplica";
-    case "RESTORE_APPLICABLE":
-      return "Restaurar aplicacion";
-  }
-}
+function buildBoardTabs(
+  requests: RequestDetailRecord[],
+  currentUser: Pick<SessionUser, "id" | "role">,
+): BoardTab[] {
+  const mineRequests =
+    currentUser.role === "READER"
+      ? requests
+      : requests.filter((request) => request.assignedEditor?.id === currentUser.id);
 
-function progressTransitionButtonLabel(transition: ProgressTransition) {
-  switch (transition) {
-    case "COMPLETE":
-      return "Completar actividad";
-    case "REOPEN":
-      return "Reabrir actividad";
-    case "MARK_NOT_APPLICABLE":
-      return "Guardar no aplica";
-    case "RESTORE_APPLICABLE":
-      return "Restaurar aplicacion";
-  }
-}
-
-function findLatestProgress(activities: RequestActivityRecord[]) {
-  return activities.find((activity) =>
-    [
-      "PROGRESS_UPDATED",
-      "STEP_COMPLETED",
-      "STEP_REOPENED",
-      "WAITING_FOR_REQUESTER",
-      "REQUESTER_RESPONSE_RECORDED",
-      "STARTED",
-      "ASSIGNED",
-      "REASSIGNED",
-    ].includes(activity.type),
-  );
+  return [
+    {
+      id: "active",
+      label: "Activas",
+      description: "Solicitudes en trabajo, revision, aprobacion o publicacion.",
+      emptyMessage: "No hay solicitudes activas en este momento.",
+      requests: requests.filter((request) => activeWorkflowStatuses.includes(request.status)),
+    },
+    {
+      id: "mine",
+      label: currentUser.role === "READER" ? "Mis solicitudes" : "Mis asignadas",
+      description:
+        currentUser.role === "READER"
+          ? "Solicitudes registradas por el solicitante autenticado."
+          : "Solicitudes asignadas al editor autenticado.",
+      emptyMessage:
+        currentUser.role === "READER"
+          ? "No tienes solicitudes registradas."
+          : "No tienes solicitudes asignadas.",
+      requests: mineRequests,
+    },
+    {
+      id: "pending",
+      label: "Pendientes",
+      description: "Solicitudes que aun no tienen asignacion o no han arrancado el trabajo.",
+      emptyMessage: "No hay solicitudes pendientes por atender.",
+      requests: requests.filter(
+        (request) => request.status === "PENDING_ASSIGNMENT" || request.status === "ASSIGNED",
+      ),
+    },
+    {
+      id: "closed",
+      label: "Cerradas",
+      description: "Solicitudes con cierre formal registrado.",
+      emptyMessage: "No hay solicitudes cerradas.",
+      requests: requests.filter((request) => request.status === "CLOSED"),
+    },
+    {
+      id: "cancelled",
+      label: "Canceladas",
+      description: "Solicitudes canceladas con justificacion registrada.",
+      emptyMessage: "No hay solicitudes canceladas.",
+      requests: requests.filter((request) => request.status === "CANCELLED"),
+    },
+  ];
 }

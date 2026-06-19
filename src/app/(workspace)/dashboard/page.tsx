@@ -1,8 +1,16 @@
+import Link from "next/link";
+
 import { PageHeader } from "@/components/page-header";
 import { RequestModalLauncher } from "@/components/request-modal-launcher";
 import { StatCard } from "@/components/stat-card";
 import { StatusChip, workflowTone } from "@/components/status-chip";
-import { reviewDecisionLabels, workflowStatusLabels } from "@/lib/presenters";
+import {
+  requestPriorityLabels,
+  responsibilityRoleLabels,
+  reviewDecisionLabels,
+  waitingReasonLabels,
+  workflowStatusLabels,
+} from "@/lib/presenters";
 import { requireAuthorizedUser } from "@/lib/server/auth";
 import { getRequestIntakeSnapshot } from "@/lib/server/request-service";
 import { getDashboardSnapshot } from "@/lib/server/mock-data-service";
@@ -21,6 +29,9 @@ export default async function DashboardPage() {
         actions={
           <>
             <button className="button-secondary">Exportar trazabilidad</button>
+            <Link href="/requests" className="button-secondary">
+              Ir a solicitudes
+            </Link>
             <RequestModalLauncher
               allowedExtensionsLabel={intakeSnapshot.attachmentPolicy.allowedExtensionsLabel}
               canCreateRequests={intakeSnapshot.canCreateRequests}
@@ -48,8 +59,17 @@ export default async function DashboardPage() {
             <div className="max-w-2xl">
               <p className="section-label">Cola priorizada</p>
               <h2 className="panel-title mt-2">Solicitudes y documentos con accion inmediata</h2>
+              <p className="mt-3 text-sm leading-6 text-slate">
+                Este tablero resume la carga. La edicion del avance, responsabilidad y espera del
+                solicitante se realiza desde el espacio de solicitudes.
+              </p>
             </div>
-            <StatusChip tone="accent">Administrador + editor</StatusChip>
+            <div className="flex flex-wrap gap-2">
+              <StatusChip tone="accent">Administrador + editor</StatusChip>
+              <Link href="/requests" className="button-secondary">
+                Abrir seguimiento operativo
+              </Link>
+            </div>
           </div>
 
           <div className="subtle-scroll overflow-auto">
@@ -59,7 +79,9 @@ export default async function DashboardPage() {
                   <th className="px-6 py-4 font-semibold">Solicitud</th>
                   <th className="px-6 py-4 font-semibold">Proceso</th>
                   <th className="px-6 py-4 font-semibold">Prioridad</th>
+                  <th className="px-6 py-4 font-semibold">Seguimiento</th>
                   <th className="px-6 py-4 font-semibold">Estado</th>
+                  <th className="px-6 py-4 font-semibold">Accion</th>
                 </tr>
               </thead>
               <tbody>
@@ -74,13 +96,38 @@ export default async function DashboardPage() {
                     <td className="px-6 py-5 text-slate">{request.process}</td>
                     <td className="px-6 py-5">
                       <StatusChip tone={request.priority === "Alta" ? "red" : "amber"}>
-                        {request.priority}
+                        {requestPriorityLabels[request.priority]}
                       </StatusChip>
+                    </td>
+                    <td className="px-6 py-5">
+                      <div className="space-y-2">
+                        <p className="font-semibold text-foreground">
+                          {request.progressPercent ?? 0}% objetivo
+                        </p>
+                        {request.currentResponsibilityRole ? (
+                          <StatusChip tone="slate">
+                            {responsibilityRoleLabels[request.currentResponsibilityRole]}
+                          </StatusChip>
+                        ) : null}
+                        {request.waitingReason && request.waitingReason !== "NONE" ? (
+                          <StatusChip tone="amber">
+                            {waitingReasonLabels[request.waitingReason]}
+                          </StatusChip>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-6 py-5">
                       <StatusChip tone={workflowTone(workflowStatusLabels[request.status])}>
                         {workflowStatusLabels[request.status]}
                       </StatusChip>
+                    </td>
+                    <td className="px-6 py-5">
+                      <Link
+                        href={request.id ? `/requests?requestId=${encodeURIComponent(request.id)}` : "/requests"}
+                        className="button-secondary"
+                      >
+                        Gestionar
+                      </Link>
                     </td>
                   </tr>
                 ))}

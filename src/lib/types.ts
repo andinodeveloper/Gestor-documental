@@ -49,7 +49,10 @@ export type RequestActivityType =
   | "ASSIGNED"
   | "REASSIGNED"
   | "STARTED"
+  | "CANCELLATION_REQUESTED"
+  | "CANCELLATION_REJECTED"
   | "PROGRESS_UPDATED"
+  | "TRACKING_UPDATED"
   | "STEP_COMPLETED"
   | "STEP_REOPENED"
   | "STEP_MARKED_NOT_APPLICABLE"
@@ -121,22 +124,20 @@ export interface RequestActivityRecord {
   createdAt: string;
   note?: string;
   statusAfter?: WorkflowStatus;
+  responsibilityRole?: ResponsibilityRole;
+  waitingReason?: WaitingReason;
+  trackingStage?: RequestTrackingStageRecord;
   type: RequestActivityType;
 }
 
-export interface RequestProgressItemRecord {
-  id: string;
+export interface RequestTrackingStageRecord {
+  code: string;
   phaseCode: string;
   phaseName: string;
-  activityCode: string;
   activityName: string;
   description?: string;
-  weight: number;
-  status: RequestProgressItemStatus;
-  note?: string;
-  completedAt?: string;
-  lastChangedAt: string;
-  lastChangedBy?: RequestPersonRecord;
+  progressPercent: number;
+  sortOrder: number;
 }
 
 export interface RequesterOptionRecord {
@@ -175,20 +176,29 @@ export interface RequestDetailRecord {
   assignedEditor?: RequestPersonRecord;
   assignedAt?: string;
   assignedBy?: RequestPersonRecord;
+  startedAt?: string;
   progressPercent: number;
   currentPhaseCode?: string;
   currentPhaseName?: string;
   currentActivityCode?: string;
   currentActivityName?: string;
+  currentActivityDescription?: string;
   currentResponsibilityRole: ResponsibilityRole;
   waitingReason: WaitingReason;
   waitingSince?: string;
   lastRequesterResponseAt?: string;
+  hasPendingCancellation: boolean;
+  cancellationRequestedAt?: string;
+  cancellationRequestedBy?: RequestPersonRecord;
+  cancellationRequestReason?: string;
+  currentStageElapsedLabel?: string;
+  currentStageVisits: number;
+  totalElapsedLabel: string;
   process?: RequestOptionRecord;
   documentType?: RequestOptionRecord;
   attachments: RequestAttachmentRecord[];
   activities: RequestActivityRecord[];
-  progressItems: RequestProgressItemRecord[];
+  stageCatalog: RequestTrackingStageRecord[];
 }
 
 export interface RequestBoardFilters {
