@@ -122,6 +122,7 @@ export interface RequestActivityRecord {
   id: string;
   actor?: RequestPersonRecord;
   createdAt: string;
+  createdAtMs: number;
   note?: string;
   statusAfter?: WorkflowStatus;
   responsibilityRole?: ResponsibilityRole;

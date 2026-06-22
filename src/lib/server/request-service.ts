@@ -1453,6 +1453,7 @@ function mapRequestActivityRecord(
     id: activity.id,
     actor: activity.actorUserId ? resolvePersonRecord(people, activity.actorUserId) : undefined,
     createdAt: formatDateTime(activity.createdAt),
+    createdAtMs: activity.createdAt.getTime(),
     note: activity.note || undefined,
     statusAfter: activity.statusAfter ? normalizeWorkflowStatus(activity.statusAfter) : undefined,
     responsibilityRole: activity.responsibilityRole
@@ -1680,7 +1681,7 @@ function formatElapsedTime(date: Date) {
   const minutes = totalMinutes % 60;
 
   if (days > 0) {
-    return `${days} d ${hours} h`;
+    return `${days} dia${days === 1 ? "" : "s"} ${hours} h`;
   }
 
   if (totalHours > 0) {
