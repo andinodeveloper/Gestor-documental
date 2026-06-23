@@ -265,6 +265,8 @@ const requestTrackingStageCatalog: RequestTrackingStageTemplateItem[] = [
   },
 ];
 
+const draftReviewStartStageCode = "3.1";
+
 export function getRequestTrackingStages(requestType: RequestType) {
   return requestTrackingStageCatalog.filter(
     (item) => item.appliesToRequestType === "BOTH" || item.appliesToRequestType === requestType,
@@ -289,6 +291,16 @@ export function hasRequestStarted(
   requestType: RequestType,
 ) {
   return getRequestTrackingStage(stageCode, requestType).sortOrder >= 40;
+}
+
+export function canRequestEnterDraftReviewFlow(
+  stageCode: string | null | undefined,
+  requestType: RequestType,
+) {
+  const currentStage = getRequestTrackingStage(stageCode, requestType);
+  const draftReviewStartStage = getRequestTrackingStage(draftReviewStartStageCode, requestType);
+
+  return currentStage.sortOrder >= draftReviewStartStage.sortOrder;
 }
 
 export function deriveWorkflowStatusFromTracking(input: {

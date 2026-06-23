@@ -42,10 +42,13 @@ export default async function RequestsPage({ searchParams }: RequestsPageProps) 
         actions={
           <RequestModalLauncher
             allowedExtensionsLabel={snapshot.attachmentPolicy.allowedExtensionsLabel}
+            areaOptions={snapshot.areaOptions}
             canCreateRequests={snapshot.canCreateRequests}
             currentUser={user}
             documentTypeOptions={snapshot.documentTypeOptions}
+            maxAttachmentCountLabel={snapshot.attachmentPolicy.maxAttachmentCountLabel}
             maxAttachmentSizeLabel={snapshot.attachmentPolicy.maxAttachmentSizeLabel}
+            maxTotalSizeLabel={snapshot.attachmentPolicy.maxTotalSizeLabel}
             processOptions={snapshot.processOptions}
             relatedDocumentOptions={snapshot.relatedDocumentOptions}
             requesterOptions={snapshot.requesterOptions}
@@ -64,10 +67,13 @@ export default async function RequestsPage({ searchParams }: RequestsPageProps) 
         />
 
         <RequestsWorkspaceBoard
+          areaOptions={snapshot.areaOptions}
           canAssignRequests={snapshot.canAssignRequests}
           currentUser={{ id: user.id, role: user.role }}
+          documentTypeOptions={snapshot.documentTypeOptions}
           editors={snapshot.editors}
           initialDetailRequestId={requestId}
+          processOptions={snapshot.processOptions}
           requests={snapshot.requests}
         />
       </section>

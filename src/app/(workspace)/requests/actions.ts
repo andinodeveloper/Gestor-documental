@@ -15,6 +15,7 @@ import {
   rejectCancellation,
   requestCancellation,
   startRequestWork,
+  updateRequestClassification,
   updateRequestProgress,
   updateRequestTracking,
 } from "@/lib/server/request-service";
@@ -55,7 +56,7 @@ export async function createRequestAction(
 
   const requestType = readRequestType(formData.get("requestType"));
   const requesterUserId = readText(formData.get("requesterUserId"));
-  const requesterArea = readText(formData.get("requesterArea"));
+  const requesterAreaId = readText(formData.get("requesterAreaId"));
   const suggestedProcessId = readText(formData.get("suggestedProcessId"));
   const suggestedDocumentTypeId = readText(formData.get("suggestedDocumentTypeId"));
   const relatedDocumentId = readText(formData.get("relatedDocumentId"));
@@ -79,8 +80,8 @@ export async function createRequestAction(
     fieldErrors.requesterUserId = "Debes indicar el lector solicitante.";
   }
 
-  if (!requesterArea) {
-    fieldErrors.requesterArea = "Debes indicar el area solicitante.";
+  if (!requesterAreaId) {
+    fieldErrors.requesterAreaId = "Debes seleccionar un area activa.";
   }
 
   if (!suggestedProcessId) {
@@ -136,7 +137,7 @@ export async function createRequestAction(
       requesterUserId,
       createdByUser: user,
       requestType: validatedRequestType,
-      requesterArea,
+      requesterAreaId,
       suggestedProcessId,
       suggestedDocumentTypeId,
       relatedDocumentId: relatedDocumentId || undefined,
@@ -316,6 +317,52 @@ export async function updateRequestTrackingStateAction(
         error instanceof Error
           ? error.message
           : "No fue posible actualizar el seguimiento de la solicitud.",
+    };
+  }
+
+  revalidateRequestPages();
+
+  return {
+    status: "success",
+  };
+}
+
+export async function updateRequestClassificationStateAction(
+  _previousState: RequestMutationState = initialMutationState,
+  formData: FormData,
+): Promise<RequestMutationState> {
+  void _previousState;
+  const user = await requireAuthorizedUser("/requests");
+  const requestId = readText(formData.get("requestId"));
+  const requesterAreaId = readText(formData.get("requesterAreaId"));
+  const suggestedProcessId = readText(formData.get("suggestedProcessId"));
+  const suggestedDocumentTypeId = readText(formData.get("suggestedDocumentTypeId"));
+  const note = readOptionalText(formData.get("note"));
+
+  if (!requestId || !requesterAreaId || !suggestedProcessId || !suggestedDocumentTypeId) {
+    return {
+      status: "error",
+      message:
+        "Debes indicar la solicitud y completar area, proceso y tipo documental.",
+    };
+  }
+
+  try {
+    await updateRequestClassification({
+      actorUser: user,
+      note,
+      requestId,
+      requesterAreaId,
+      suggestedDocumentTypeId,
+      suggestedProcessId,
+    });
+  } catch (error) {
+    return {
+      status: "error",
+      message:
+        error instanceof Error
+          ? error.message
+          : "No fue posible actualizar la clasificacion de la solicitud.",
     };
   }
 

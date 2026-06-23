@@ -94,6 +94,23 @@ npm run start
 
 5. Abrir [http://localhost:3000](http://localhost:3000)
 
+## Arranque productivo en Windows
+
+Para despliegue manual o pruebas tipo produccion en Windows usa:
+
+```cmd
+iniciar-app-produccion.cmd
+```
+
+Ese script ahora:
+
+- genera Prisma Client
+- aplica `prisma/schema.prisma` sobre la base con `db:push`
+- alinea indices y ajustes complementarios de SQL Server
+- compila la app y arranca `next start`
+
+Con esto el schema nuevo queda efectivamente aplicado, incluyendo la tabla `AppSetting` usada para las politicas administrables de archivos.
+
 ## Base de datos
 
 El proyecto queda orientado a `SQL Server`. Para desarrollo local, la ruta recomendada es:

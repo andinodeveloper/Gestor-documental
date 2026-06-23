@@ -49,6 +49,7 @@ export type RequestActivityType =
   | "ASSIGNED"
   | "REASSIGNED"
   | "STARTED"
+  | "CLASSIFICATION_UPDATED"
   | "CANCELLATION_REQUESTED"
   | "CANCELLATION_REJECTED"
   | "PROGRESS_UPDATED"
@@ -72,6 +73,26 @@ export type DocumentState =
 
 export type ReviewDecision = "PENDING" | "APPROVED" | "REJECTED";
 export type AccessEffect = "ALLOW" | "DENY";
+export type ReviewAssignmentRole = "REVIEWER" | "APPROVER";
+export type ReviewRoundStatus = "IN_REVIEW" | "OBSERVED" | "APPROVED" | "OFFICIALIZED";
+export type DocumentVersionStatus =
+  | "DRAFT"
+  | "IN_REVIEW"
+  | "REJECTED"
+  | "APPROVED"
+  | "OFFICIAL"
+  | "SUPERSEDED"
+  | "ARCHIVED";
+export type VersionChangeKind = "MAJOR" | "MINOR";
+export type DraftCommentType = "OBSERVATION" | "SUGGESTION";
+export type DraftCommentStatus = "OPEN" | "RESOLVED";
+export type FilePreviewKind =
+  | "pdf"
+  | "image"
+  | "plain-text"
+  | "spreadsheet"
+  | "office"
+  | "unsupported";
 
 export interface NavigationItem {
   key: NavKey;
@@ -104,12 +125,16 @@ export interface RequestRecord {
 }
 
 export interface RequestAttachmentRecord {
+  canDownload: boolean;
+  canPreview: boolean;
   id: string;
-  originalFileName: string;
+  downloadHref: string;
   mimeType: string;
+  originalFileName: string;
+  previewHref: string;
+  previewKind: FilePreviewKind;
   sizeBytes: number;
   uploadedAt: string;
-  downloadHref: string;
 }
 
 export interface RequestPersonRecord {
@@ -166,6 +191,7 @@ export interface RequestDetailRecord {
   title: string;
   description: string;
   justification?: string;
+  requesterAreaId?: string;
   requesterArea?: string;
   priority?: RequestPriority;
   requiredDate?: string;
@@ -251,12 +277,164 @@ export interface DocumentRecord {
   aiEnabled?: boolean;
 }
 
+export interface DocumentVersionTimelineRecord {
+  id: string;
+  displayCode: string;
+  versionLabel: string;
+  status: DocumentVersionStatus;
+  changeKind?: VersionChangeKind;
+  changeSummary?: string;
+  createdAt: string;
+  submittedAt?: string;
+  approvedAt?: string;
+  officializedAt?: string;
+  isCurrent: boolean;
+  draftFiles: ReviewFileRecord[];
+  officialFiles: ReviewFileRecord[];
+}
+
+export interface DocumentLibraryRecord {
+  id: string;
+  code: string;
+  title: string;
+  processLabel: string;
+  documentTypeLabel: string;
+  state: DocumentState;
+  updatedAt: string;
+  officializedAt?: string;
+  owner?: RequestPersonRecord;
+  summary?: string;
+  linkedRequestCodes: string[];
+  replacementCode?: string;
+  versions: DocumentVersionTimelineRecord[];
+}
+
+export interface DocumentsWorkspaceSnapshot {
+  documents: DocumentLibraryRecord[];
+}
+
 export interface ReviewComment {
   author: string;
   role: "Editor" | "Revisor" | "Aprobador";
   status: "Pendiente" | "Aceptada" | "Rechazada" | "Aplicada";
   section: string;
   note: string;
+}
+
+export interface ReviewUserOptionRecord {
+  id: string;
+  name: string;
+  username: string;
+  role: AppRole;
+}
+
+export interface ReviewRequestCandidateRecord {
+  id: string;
+  requestCode: string;
+  title: string;
+  requestType: RequestType;
+  processLabel: string;
+  documentTypeLabel: string;
+  status: WorkflowStatus;
+  currentActivityName?: string;
+  requester?: RequestPersonRecord;
+  assignedEditor?: RequestPersonRecord;
+  relatedDocumentLabel?: string;
+  updatedAt: string;
+}
+
+export interface ReviewFileRecord {
+  canDownload: boolean;
+  canPreview: boolean;
+  id: string;
+  downloadHref: string;
+  fileRole: "DRAFT" | "OFFICIAL";
+  mimeType: string;
+  originalFileName: string;
+  previewHref: string;
+  previewKind: FilePreviewKind;
+  sizeBytes: number;
+  uploadedAt: string;
+}
+
+export interface ReviewDraftCommentRecord {
+  id: string;
+  assignmentId: string;
+  assignmentRole: ReviewAssignmentRole;
+  author: RequestPersonRecord;
+  commentType: DraftCommentType;
+  comment: string;
+  suggestedText?: string;
+  sectionReference?: string;
+  status: DraftCommentStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: RequestPersonRecord;
+}
+
+export interface ReviewAssignmentRecord {
+  id: string;
+  user: RequestPersonRecord;
+  assignmentRole: ReviewAssignmentRole;
+  status: ReviewDecision;
+  decisionComment?: string;
+  decidedAt?: string;
+  openCommentCount: number;
+  totalCommentCount: number;
+}
+
+export interface ReviewRoundRecord {
+  id: string;
+  roundNumber: number;
+  status: ReviewRoundStatus;
+  submittedAt?: string;
+  submittedBy?: RequestPersonRecord;
+  closedAt?: string;
+  assignments: ReviewAssignmentRecord[];
+  comments: ReviewDraftCommentRecord[];
+}
+
+export interface ReviewWorkItemRecord {
+  documentId: string;
+  documentCode: string;
+  documentTitle: string;
+  documentState: DocumentState;
+  identityCode?: string;
+  temporaryCode?: string;
+  request?: ReviewRequestCandidateRecord;
+  processLabel: string;
+  documentTypeLabel: string;
+  ownerEditor?: RequestPersonRecord;
+  versionId: string;
+  versionLabel: string;
+  versionStatus: DocumentVersionStatus;
+  fullCode?: string;
+  changeKind?: VersionChangeKind;
+  changeSummary?: string;
+  createdAt: string;
+  submittedAt?: string;
+  approvedAt?: string;
+  officializedAt?: string;
+  latestRound?: ReviewRoundRecord;
+  previousRounds: ReviewRoundRecord[];
+  draftFiles: ReviewFileRecord[];
+  officialFiles: ReviewFileRecord[];
+  pendingAssignments: number;
+  approvedAssignments: number;
+  rejectedAssignments: number;
+  openCommentCount: number;
+}
+
+export interface ReviewsWorkspaceSnapshot {
+  canApprove: boolean;
+  canCreateDraft: boolean;
+  canOfficialize: boolean;
+  canReview: boolean;
+  canSubmitReview: boolean;
+  requestCandidates: ReviewRequestCandidateRecord[];
+  reviewerOptions: ReviewUserOptionRecord[];
+  approverOptions: ReviewUserOptionRecord[];
+  workItems: ReviewWorkItemRecord[];
 }
 
 export interface AccessRule {

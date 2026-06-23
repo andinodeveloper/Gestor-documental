@@ -24,7 +24,7 @@ const mimeTypesByExtension: Record<string, string> = {
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 };
 
-export interface StoredRequestAttachment {
+export interface StoredDocumentFile {
   originalFileName: string;
   storagePath: string;
   mimeType: string;
@@ -32,29 +32,28 @@ export interface StoredRequestAttachment {
   uploadedByUserId?: string;
 }
 
-export async function getRequestAttachmentPolicy() {
+export async function getDocumentFilePolicy() {
   const policy = await getFileManagementPolicy();
 
   return {
-    allowedExtensions: policy.requestAllowedExtensions,
-    maxAttachmentCount: policy.requestMaxAttachmentCount,
-    maxAttachmentSizeBytes: policy.requestMaxAttachmentSizeBytes,
-    maxTotalSizeBytes: policy.requestMaxTotalSizeBytes,
+    allowedExtensions: policy.documentAllowedExtensions,
+    maxFileSizeBytes: policy.documentMaxFileSizeBytes,
   };
 }
 
-export async function saveRequestAttachment(input: {
-  requestId: string;
+export async function saveDocumentFile(input: {
+  documentId: string;
+  documentVersionId: string;
   file: File;
+  fileRole: "DRAFT" | "OFFICIAL";
   uploadedByUserId?: string;
 }) {
-  const { requestId, file, uploadedByUserId } = input;
-  const { allowedExtensions, maxAttachmentSizeBytes } = await getRequestAttachmentPolicy();
-  const originalFileName = file.name.trim();
+  const { allowedExtensions, maxFileSizeBytes } = await getDocumentFilePolicy();
+  const originalFileName = input.file.name.trim();
   const extension = getFileExtension(originalFileName);
 
   if (!originalFileName) {
-    throw new Error("Cada anexo debe tener nombre de archivo.");
+    throw new Error("Debes indicar un archivo documental valido.");
   }
 
   if (!allowedExtensions.includes(extension)) {
@@ -63,20 +62,25 @@ export async function saveRequestAttachment(input: {
     );
   }
 
-  if (file.size === 0) {
+  if (input.file.size === 0) {
     throw new Error(`El archivo ${originalFileName} esta vacio.`);
   }
 
-  if (file.size > maxAttachmentSizeBytes) {
+  if (input.file.size > maxFileSizeBytes) {
     throw new Error(
-      `El archivo ${originalFileName} supera el tamano maximo de ${formatMegabytes(maxAttachmentSizeBytes)} MB.`,
+      `El archivo ${originalFileName} supera el tamano maximo de ${formatMegabytes(maxFileSizeBytes)} MB.`,
     );
   }
 
-  const relativePath = toStoragePath(requestId, extension);
+  const relativePath = toStoragePath({
+    documentId: input.documentId,
+    documentVersionId: input.documentVersionId,
+    extension,
+    fileRole: input.fileRole,
+  });
   const absolutePath = resolveStoragePath(relativePath);
   const targetDirectory = path.dirname(absolutePath);
-  const buffer = Buffer.from(await file.arrayBuffer());
+  const buffer = Buffer.from(await input.file.arrayBuffer());
 
   await mkdir(targetDirectory, { recursive: true });
   await writeFile(absolutePath, buffer);
@@ -84,27 +88,25 @@ export async function saveRequestAttachment(input: {
   return {
     originalFileName,
     storagePath: relativePath,
-    mimeType: file.type || mimeTypesByExtension[extension] || "application/octet-stream",
+    mimeType: input.file.type || mimeTypesByExtension[extension] || "application/octet-stream",
     sizeBytes: buffer.byteLength,
-    uploadedByUserId,
-  } satisfies StoredRequestAttachment;
+    uploadedByUserId: input.uploadedByUserId,
+  } satisfies StoredDocumentFile;
 }
 
-export async function deleteStoredRequestAttachments(storagePaths: string[]) {
+export async function readStoredDocumentFile(storagePath: string) {
+  return readFile(resolveStoragePath(storagePath));
+}
+
+export async function deleteStoredDocumentFiles(storagePaths: string[]) {
   await Promise.all(
     storagePaths.map(async (storagePath) => {
-      const absolutePath = resolveStoragePath(storagePath);
-      await rm(absolutePath, { force: true });
+      await rm(resolveStoragePath(storagePath), { force: true });
     }),
   );
 }
 
-export async function readStoredRequestAttachment(storagePath: string) {
-  const absolutePath = resolveStoragePath(storagePath);
-  return readFile(absolutePath);
-}
-
-export function formatAttachmentSize(sizeBytes: number) {
+export function formatDocumentFileSize(sizeBytes: number) {
   if (sizeBytes < 1024) {
     return `${sizeBytes} B`;
   }
@@ -128,7 +130,7 @@ function resolveStoragePath(storagePath: string) {
   const relativePath = path.relative(storageRoot, absolutePath);
 
   if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-    throw new Error("La ruta de almacenamiento del anexo es invalida.");
+    throw new Error("La ruta de almacenamiento del documento es invalida.");
   }
 
   return absolutePath;
@@ -138,8 +140,13 @@ function getFileExtension(fileName: string) {
   return path.extname(fileName).replace(".", "").trim().toLowerCase();
 }
 
-function toStoragePath(requestId: string, extension: string) {
-  return `request-attachments/${requestId}/${randomUUID()}.${extension}`;
+function toStoragePath(input: {
+  documentId: string;
+  documentVersionId: string;
+  extension: string;
+  fileRole: "DRAFT" | "OFFICIAL";
+}) {
+  return `document-files/${input.documentId}/${input.documentVersionId}/${input.fileRole.toLowerCase()}/${randomUUID()}.${input.extension}`;
 }
 
 function formatMegabytes(sizeBytes: number) {

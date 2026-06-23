@@ -1,24 +1,70 @@
-import { accessRules, aiResponsePresets, auditEvents, dashboardMetrics, documentRecords, documentTree, readerGroups, requestRecords, reviewComments, reviewTasks, users } from "@/lib/app-data";
+import { accessRules, aiResponsePresets, auditEvents, documentRecords, documentTree, readerGroups, requestRecords, reviewComments, reviewTasks, users } from "@/lib/app-data";
 import { REQUESTS_CREATE_PERMISSION, getDefaultPermissionsForRole, mergePermissions } from "@/lib/auth/permissions";
 import { canUserQueryDocumentWithAi, canUserReadDocument } from "@/lib/auth/document-access";
 import { roleLabels } from "@/lib/auth/policy";
 import type { SessionUser } from "@/lib/auth/types";
+import { reviewAssignmentRoleLabels } from "@/lib/presenters";
 import { runtimeConfig } from "@/lib/config/runtime";
+import type { MetricCard } from "@/lib/types";
 import { prisma } from "@/lib/server/db";
 import { getDashboardRequestSnapshot } from "@/lib/server/request-service";
+import { getReviewsWorkspaceSnapshot } from "@/lib/server/review-service";
 
-export async function getDashboardSnapshot() {
-  const requestSnapshot = await getDashboardRequestSnapshot();
+export async function getDashboardSnapshot(user: SessionUser) {
+  const [requestSnapshot, reviewSnapshot, officialDocumentCount] = await Promise.all([
+    getDashboardRequestSnapshot(),
+    getReviewsWorkspaceSnapshot(user),
+    prisma.document.count({
+      where: {
+        status: "OFFICIAL",
+      },
+    }),
+  ]);
+  const readyToOfficializeCount = reviewSnapshot.workItems.filter(
+    (item) => item.versionStatus === "APPROVED",
+  ).length;
+  const activeReviewCount = reviewSnapshot.workItems.length;
+  const metrics: MetricCard[] = [
+    requestSnapshot.metrics[0],
+    requestSnapshot.metrics[1],
+    {
+      label: "Borradores y rondas",
+      value: String(activeReviewCount).padStart(2, "0"),
+      detail:
+        activeReviewCount === 0
+          ? "Sin flujo activo"
+          : "Revision y aprobacion en curso",
+      tone: activeReviewCount > 0 ? "accent" : "green",
+    },
+    {
+      label: "Documentos oficiales",
+      value: String(officialDocumentCount).padStart(2, "0"),
+      detail:
+        readyToOfficializeCount > 0
+          ? `${readyToOfficializeCount} listos para publicar`
+          : officialDocumentCount === 0
+            ? "Sin publicaciones"
+            : "Biblioteca oficial vigente",
+      tone: readyToOfficializeCount > 0 ? "accent" : "green",
+    },
+  ];
 
   return {
-    metrics: [
-      requestSnapshot.metrics[0],
-      requestSnapshot.metrics[1],
-      dashboardMetrics[2],
-      dashboardMetrics[3],
-    ],
+    metrics,
     requests: requestSnapshot.requests,
-    reviews: reviewTasks,
+    reviews: reviewSnapshot.workItems.flatMap((item) =>
+      (item.latestRound?.assignments ?? [])
+        .filter((assignment) => assignment.user.id === user.id && assignment.status === "PENDING")
+        .map((assignment) => ({
+          code: item.documentCode,
+          title: item.documentTitle,
+          version: item.versionLabel,
+          owner: item.ownerEditor?.name ?? "Sin responsable",
+          status: assignment.status,
+          role: reviewAssignmentRoleLabels[assignment.assignmentRole],
+          dueDate: item.submittedAt ?? item.createdAt,
+        })),
+    ),
     events: auditEvents,
   };
 }

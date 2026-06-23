@@ -5,6 +5,7 @@ cd /d "%~dp0"
 set "HOST=127.0.0.1"
 if "%PORT%"=="" set "PORT=3000"
 if not "%~1"=="" set "PORT=%~1"
+if "%AUTO_APPLY_DB_SCHEMA%"=="" set "AUTO_APPLY_DB_SCHEMA=0"
 set "APP_URL=http://%HOST%:%PORT%"
 
 call :validar_entorno
@@ -12,6 +13,44 @@ if errorlevel 1 exit /b 1
 
 call :validar_puerto_libre
 if errorlevel 1 exit /b 1
+
+set "SHOULD_SYNC_DB=0"
+if /I not "%AUTO_APPLY_DB_SCHEMA%"=="0" (
+  if /I "%AUTH_MODE%"=="database" set "SHOULD_SYNC_DB=1"
+
+  if "%SHOULD_SYNC_DB%"=="0" if exist ".env" (
+    findstr /B /I /C:"AUTH_MODE=database" ".env" >nul
+    if not errorlevel 1 set "SHOULD_SYNC_DB=1"
+
+    findstr /B /I /C:"AUTH_MODE=\"database\"" ".env" >nul
+    if not errorlevel 1 set "SHOULD_SYNC_DB=1"
+  )
+
+  if "%SHOULD_SYNC_DB%"=="1" (
+    echo.
+    echo Sincronizando schema Prisma para entorno database...
+    echo.
+
+    call npm.cmd run db:generate
+    set "DB_GENERATE_EXIT_CODE=%ERRORLEVEL%"
+    if not "%DB_GENERATE_EXIT_CODE%"=="0" (
+      echo.
+      echo No fue posible generar Prisma Client antes de iniciar la app.
+      pause
+      exit /b %DB_GENERATE_EXIT_CODE%
+    )
+
+    call npm.cmd run db:push
+    set "DB_PUSH_EXIT_CODE=%ERRORLEVEL%"
+    if not "%DB_PUSH_EXIT_CODE%"=="0" (
+      echo.
+      echo No fue posible aplicar el schema Prisma antes de iniciar la app.
+      echo Revisa DATABASE_URL y el acceso a SQL Server.
+      pause
+      exit /b %DB_PUSH_EXIT_CODE%
+    )
+  )
+)
 
 echo ==========================================
 echo   Gestor Documental - Modo Desarrollo

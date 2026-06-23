@@ -11,9 +11,11 @@ import {
   requestCancellationStateAction,
   startRequestStateAction,
   type RequestMutationState,
+  updateRequestClassificationStateAction,
   updateRequestProgressStateAction,
   updateRequestTrackingStateAction,
 } from "@/app/(workspace)/requests/actions";
+import { FilePreviewDialog } from "@/components/file-preview-dialog";
 import { SubmitButton } from "@/components/submit-button";
 import { StatusChip, workflowTone } from "@/components/status-chip";
 import type { SessionUser } from "@/lib/auth/types";
@@ -29,6 +31,7 @@ import type {
   RequestActivityRecord,
   EditorOptionRecord,
   RequestDetailRecord,
+  RequestOptionRecord,
   RequestPriority,
   RequestTrackingStageRecord,
   ResponsibilityRole,
@@ -53,6 +56,7 @@ type BoardTabId = "active" | "mine" | "pending" | "closed" | "cancelled";
 type DetailTabId = "summary" | "content" | "tracking" | "history";
 type ActionModalKind =
   | "assign"
+  | "classification"
   | "request-cancel"
   | "approve-cancel"
   | "reject-cancel"
@@ -61,10 +65,13 @@ type ActionModalKind =
   | "tracking";
 
 type RequestsWorkspaceBoardProps = {
+  areaOptions: RequestOptionRecord[];
   canAssignRequests: boolean;
   currentUser: Pick<SessionUser, "id" | "role">;
+  documentTypeOptions: RequestOptionRecord[];
   editors: EditorOptionRecord[];
   initialDetailRequestId?: string;
+  processOptions: RequestOptionRecord[];
   requests: RequestDetailRecord[];
 };
 
@@ -110,10 +117,13 @@ type RequestStageVisitRecord = {
 };
 
 export function RequestsWorkspaceBoard({
+  areaOptions,
   canAssignRequests,
   currentUser,
+  documentTypeOptions,
   editors,
   initialDetailRequestId,
+  processOptions,
   requests,
 }: RequestsWorkspaceBoardProps) {
   const tabs = buildBoardTabs(requests, currentUser);
@@ -271,9 +281,12 @@ export function RequestsWorkspaceBoard({
 
       {selectedActionRequest && actionModal ? (
         <RequestActionModal
+          areaOptions={areaOptions}
+          documentTypeOptions={documentTypeOptions}
           editors={editors}
           modalState={actionModal}
           onClose={() => setActionModal(null)}
+          processOptions={processOptions}
           request={selectedActionRequest}
         />
       ) : null}
@@ -514,14 +527,20 @@ function RequestDetailModal({
 }
 
 function RequestActionModal({
+  areaOptions,
+  documentTypeOptions,
   editors,
   modalState,
   onClose,
+  processOptions,
   request,
 }: {
+  areaOptions: RequestOptionRecord[];
+  documentTypeOptions: RequestOptionRecord[];
   editors: EditorOptionRecord[];
   modalState: ActionModalState;
   onClose: () => void;
+  processOptions: RequestOptionRecord[];
   request: RequestDetailRecord;
 }) {
   if (modalState.kind === "assign") {
@@ -638,6 +657,25 @@ function RequestActionModal({
     );
   }
 
+  if (modalState.kind === "classification") {
+    return (
+      <ModalShell maxWidthClass="max-w-[620px]" onClose={onClose} zIndexClass="z-[70]">
+        <ActionModalHeader
+          title="Actualizar clasificacion"
+          description={`Ajusta area, proceso y tipo documental sugerido para ${request.code}.`}
+          onClose={onClose}
+        />
+        <UpdateClassificationForm
+          areaOptions={areaOptions}
+          documentTypeOptions={documentTypeOptions}
+          onSuccess={onClose}
+          processOptions={processOptions}
+          request={request}
+        />
+      </ModalShell>
+    );
+  }
+
   return (
     <ModalShell maxWidthClass="max-w-[560px]" onClose={onClose} zIndexClass="z-[70]">
       <ActionModalHeader
@@ -700,6 +738,108 @@ function AssignRequestForm({
         <SubmitButton
           idleLabel={request.assignedEditor ? "Guardar reasignacion" : "Guardar asignacion"}
           pendingLabel="Guardando asignacion..."
+          className="button-primary disabled:cursor-wait disabled:opacity-70"
+        />
+      </div>
+    </form>
+  );
+}
+
+function UpdateClassificationForm({
+  areaOptions,
+  documentTypeOptions,
+  onSuccess,
+  processOptions,
+  request,
+}: {
+  areaOptions: RequestOptionRecord[];
+  documentTypeOptions: RequestOptionRecord[];
+  onSuccess: () => void;
+  processOptions: RequestOptionRecord[];
+  request: RequestDetailRecord;
+}) {
+  const [state, formAction] = useActionState(
+    updateRequestClassificationStateAction,
+    initialMutationState,
+  );
+
+  useEffect(() => {
+    if (state.status === "success") {
+      onSuccess();
+    }
+  }, [onSuccess, state.status]);
+
+  return (
+    <form action={formAction} className="space-y-4 px-6 py-5">
+      <input type="hidden" name="requestId" value={request.id} />
+
+      <label className="block space-y-2">
+        <span className="text-sm font-semibold text-foreground">Area solicitante</span>
+        <select
+          name="requesterAreaId"
+          className="field-input"
+          defaultValue={request.requesterAreaId || ""}
+          required
+        >
+          <option value="">Selecciona un area</option>
+          {areaOptions.map((area) => (
+            <option key={area.id} value={area.id}>
+              {area.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="block space-y-2">
+          <span className="text-sm font-semibold text-foreground">Proceso sugerido</span>
+          <select
+            name="suggestedProcessId"
+            className="field-input"
+            defaultValue={request.process?.id || ""}
+            required
+          >
+            <option value="">Selecciona un proceso</option>
+            {processOptions.map((process) => (
+              <option key={process.id} value={process.id}>
+                {process.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block space-y-2">
+          <span className="text-sm font-semibold text-foreground">Tipo documental</span>
+          <select
+            name="suggestedDocumentTypeId"
+            className="field-input"
+            defaultValue={request.documentType?.id || ""}
+            required
+          >
+            <option value="">Selecciona un tipo</option>
+            {documentTypeOptions.map((documentType) => (
+              <option key={documentType.id} value={documentType.id}>
+                {documentType.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <label className="block space-y-2">
+        <span className="text-sm font-semibold text-foreground">Motivo del ajuste (opcional)</span>
+        <textarea
+          name="note"
+          className="min-h-[120px] w-full rounded-[20px] border border-line bg-white px-4 py-3 text-sm leading-6 text-foreground outline-none focus:border-accent focus:shadow-[0_0_0_4px_rgba(15,77,93,0.08)]"
+          placeholder="Explica por que se corrige la clasificacion o que criterio se aplico."
+        />
+      </label>
+
+      <MutationMessage state={state} />
+      <div className="flex justify-end">
+        <SubmitButton
+          idleLabel="Guardar clasificacion"
+          pendingLabel="Guardando clasificacion..."
           className="button-primary disabled:cursor-wait disabled:opacity-70"
         />
       </div>
@@ -1660,9 +1800,21 @@ function RequestAttachmentsSection({ request }: { request: RequestDetailRecord }
               <p className="mt-1 text-xs uppercase tracking-[0.14em] text-slate">
                 {attachment.mimeType} - {attachment.uploadedAt}
               </p>
-              <a href={attachment.downloadHref} className="button-secondary mt-3">
-                Descargar
-              </a>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {attachment.canPreview ? (
+                  <FilePreviewDialog
+                    canDownload={attachment.canDownload}
+                    downloadHref={attachment.downloadHref}
+                    fileName={attachment.originalFileName}
+                    previewHref={attachment.previewHref}
+                  />
+                ) : null}
+                {attachment.canDownload ? (
+                  <a href={attachment.downloadHref} className="button-secondary">
+                    Descargar
+                  </a>
+                ) : null}
+              </div>
             </div>
           ))}
         </div>
@@ -1794,6 +1946,8 @@ function getRequestAvailableActions({
   const canUpdateTracking =
     canManageAssignedRequest && hasStarted && !isFinalStatus && !request.hasPendingCancellation;
   const canAddNote = canUpdateTracking;
+  const canUpdateClassification =
+    canManageAssignedRequest && !isFinalStatus && !request.hasPendingCancellation;
   const canCloseRequest =
     canManageAssignedRequest && hasStarted && !isFinalStatus && !request.hasPendingCancellation;
   const canAssignOrReassign = canAssignRequests && !isFinalStatus && !request.hasPendingCancellation;
@@ -1813,6 +1967,14 @@ function getRequestAvailableActions({
       kind: "assign",
       label: request.assignedEditor ? "Reasignar solicitud" : "Asignar solicitud",
       tone: request.assignedEditor ? "default" : "primary",
+    },
+    {
+      group: "operational",
+      interaction: "modal",
+      isVisible: canUpdateClassification,
+      kind: "classification",
+      label: "Ajustar clasificacion",
+      tone: "default",
     },
     {
       group: "tracking",

@@ -162,6 +162,26 @@ model DocumentType {
   requestSuggestions           DocumentRequest[]  @relation("RequestSuggestedDocumentType")
 }
 
+model Area {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  name            String
+  description     String?
+  isActive        Boolean  @default(true)
+  validFrom       DateTime @default(now())
+  validTo         DateTime?
+  sortOrder       Int      @default(0)
+  parentAreaId    String?
+  replacedByAreaId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  parentArea      Area?    @relation("AreaHierarchy", fields: [parentAreaId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  childAreas      Area[]   @relation("AreaHierarchy")
+  replacedByArea  Area?    @relation("AreaReplacement", fields: [replacedByAreaId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  replacedAreas   Area[]   @relation("AreaReplacement")
+  requestAreas    DocumentRequest[] @relation("RequestArea")
+}
+
 model DocumentSequence {
   id              String       @id @default(uuid())
   documentTypeId  String
@@ -240,6 +260,7 @@ model DocumentRequest {
   requesterUserId        String?
   createdByUserId        String?
   requesterArea          String?
+  requesterAreaId        String?
   suggestedDocumentTypeId String?
   suggestedProcessId     String?
   relatedDocumentId      String?
@@ -263,6 +284,7 @@ model DocumentRequest {
   closedAt               DateTime?
   createdAt              DateTime      @default(now())
   updatedAt              DateTime      @updatedAt
+  requestArea            Area?         @relation("RequestArea", fields: [requesterAreaId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   suggestedDocumentType  DocumentType? @relation("RequestSuggestedDocumentType", fields: [suggestedDocumentTypeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   suggestedProcess       Process?      @relation("RequestSuggestedProcess", fields: [suggestedProcessId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   relatedDocument        Document?     @relation("RequestRelatedDocument", fields: [relatedDocumentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -428,6 +450,15 @@ model DownloadGrant {
   expiresAt        DateTime
   createdAt        DateTime @default(now())
   revokedAt        DateTime?
+}
+
+model AppSetting {
+  id              String   @id @default(uuid())
+  settingKey      String   @unique
+  valueJson       String
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model AuditLog {

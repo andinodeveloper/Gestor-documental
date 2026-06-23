@@ -5,6 +5,10 @@ import { usePathname } from "next/navigation";
 
 const adminTabs = [
   {
+    href: "/admin/catalogs",
+    label: "Maestros",
+  },
+  {
     href: "/admin/users",
     label: "Usuarios",
   },
@@ -19,6 +23,10 @@ const adminTabs = [
   {
     href: "/admin/permissions",
     label: "Permisos",
+  },
+  {
+    href: "/admin/settings",
+    label: "Archivos y preview",
   },
 ] as const;
 

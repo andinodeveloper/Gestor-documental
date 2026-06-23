@@ -32,6 +32,8 @@ import type {
   WaitingReason,
   WorkflowStatus,
 } from "@/lib/types";
+import { canAccessRequestAttachment, canDownloadRequestAttachment } from "@/lib/server/file-access";
+import { buildFilePreviewHref, getFilePreviewKind } from "@/lib/server/file-preview";
 import { prisma } from "@/lib/server/db";
 import {
   deleteStoredRequestAttachments,
@@ -85,6 +87,7 @@ type RequestWithRelations = {
   requesterUserId: string | null;
   createdByUserId: string | null;
   requesterArea: string | null;
+  requesterAreaId: string | null;
   suggestedDocumentTypeId: string | null;
   suggestedProcessId: string | null;
   relatedDocumentId: string | null;
@@ -112,6 +115,12 @@ type RequestWithRelations = {
     id: string;
     code: string;
     name: string;
+  } | null;
+  requestArea: {
+    id: string;
+    code: string;
+    name: string;
+    isActive: boolean;
   } | null;
   suggestedDocumentType: {
     id: string;
@@ -147,6 +156,14 @@ const requestInclude = {
     orderBy: [{ createdAt: "desc" }],
   },
   attachments: true,
+  requestArea: {
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      isActive: true,
+    },
+  },
   suggestedProcess: true,
   suggestedDocumentType: true,
   relatedDocument: {
@@ -173,16 +190,18 @@ async function findRequestsWithRelations(input: {
 }
 
 export async function getRequestIntakeSnapshot(user: SessionUser) {
-  const [processOptions, documentTypeOptions, relatedDocumentOptions, requesterOptions] =
+  const [areaOptions, processOptions, documentTypeOptions, relatedDocumentOptions, requesterOptions] =
     await Promise.all([
+      listAreaOptions(),
       listProcessOptions(),
       listDocumentTypeOptions(),
       listRelatedDocumentOptions(),
       user.role === "READER" ? Promise.resolve([]) : listRequestCapableReaders(),
     ]);
-  const attachmentPolicy = getRequestAttachmentPolicy();
+  const attachmentPolicy = await getRequestAttachmentPolicy();
 
   return {
+    areaOptions,
     processOptions,
     documentTypeOptions,
     relatedDocumentOptions,
@@ -193,6 +212,8 @@ export async function getRequestIntakeSnapshot(user: SessionUser) {
         .map((extension) => extension.toUpperCase())
         .join(", "),
       maxAttachmentSizeLabel: formatAttachmentSize(attachmentPolicy.maxAttachmentSizeBytes),
+      maxAttachmentCountLabel: String(attachmentPolicy.maxAttachmentCount),
+      maxTotalSizeLabel: formatAttachmentSize(attachmentPolicy.maxTotalSizeBytes),
     },
     canCreateRequests: canCreateDocumentRequests(user),
   };
@@ -216,7 +237,9 @@ export async function getRequestsWorkspaceSnapshot(
   const people = await resolvePeopleFromRequests(requests);
 
   return {
-    requests: sortRequests(requests).map((request) => mapRequestToDetailRecord(request, people)),
+    requests: sortRequests(requests).map((request) =>
+      mapRequestToDetailRecord(request, people, user),
+    ),
     editors,
     filters: normalizeBoardFilters(filters),
     ...intakeSnapshot,
@@ -282,7 +305,7 @@ export async function createDocumentRequest(input: {
   requesterUserId: string;
   createdByUser: SessionUser;
   requestType: RequestType;
-  requesterArea: string;
+  requesterAreaId: string;
   suggestedProcessId: string;
   suggestedDocumentTypeId: string;
   relatedDocumentId?: string;
@@ -295,6 +318,38 @@ export async function createDocumentRequest(input: {
 }) {
   const requestId = randomUUID();
   const savedStoragePaths: string[] = [];
+  const [area, process, documentType, attachmentPolicy] = await Promise.all([
+    getActiveAreaById(input.requesterAreaId),
+    getActiveProcessById(input.suggestedProcessId),
+    getActiveDocumentTypeById(input.suggestedDocumentTypeId),
+    getRequestAttachmentPolicy(),
+  ]);
+
+  if (!area) {
+    throw new Error("Debes seleccionar un area activa del catalogo.");
+  }
+
+  if (!process) {
+    throw new Error("Debes seleccionar un proceso activo del catalogo.");
+  }
+
+  if (!documentType) {
+    throw new Error("Debes seleccionar un tipo documental activo del catalogo.");
+  }
+
+  if (input.attachments.length > attachmentPolicy.maxAttachmentCount) {
+    throw new Error(
+      `Solo puedes adjuntar hasta ${attachmentPolicy.maxAttachmentCount} archivos por solicitud.`,
+    );
+  }
+
+  const totalAttachmentSize = input.attachments.reduce((sum, attachment) => sum + attachment.size, 0);
+
+  if (totalAttachmentSize > attachmentPolicy.maxTotalSizeBytes) {
+    throw new Error(
+      `El total de anexos supera el maximo permitido de ${formatAttachmentSize(attachmentPolicy.maxTotalSizeBytes)} por solicitud.`,
+    );
+  }
 
   try {
     const attachmentRecords = [];
@@ -314,10 +369,11 @@ export async function createDocumentRequest(input: {
       id: requestId,
       requesterUserId: input.requesterUserId,
       createdByUserId: input.createdByUser.id,
-      requesterArea: input.requesterArea,
+      requesterArea: formatOptionLabel(area),
+      requesterAreaId: area.id,
       requestType: input.requestType,
-      suggestedProcessId: input.suggestedProcessId,
-      suggestedDocumentTypeId: input.suggestedDocumentTypeId,
+      suggestedProcessId: process.id,
+      suggestedDocumentTypeId: documentType.id,
       relatedDocumentId: input.relatedDocumentId,
       title: input.title,
       description: input.description,
@@ -661,6 +717,165 @@ export async function updateRequestTracking(input: {
   });
 }
 
+export async function updateRequestClassification(input: {
+  actorUser: SessionUser;
+  note?: string;
+  requestId: string;
+  requesterAreaId: string;
+  suggestedDocumentTypeId: string;
+  suggestedProcessId: string;
+}) {
+  const request = (await prismaTracking.documentRequest.findUnique({
+    where: { id: input.requestId },
+    select: {
+      id: true,
+      assignedEditorUserId: true,
+      status: true,
+      cancellationRequestedAt: true,
+      currentTrackingStageCode: true,
+      currentResponsibilityRole: true,
+      waitingReason: true,
+      requesterArea: true,
+      requesterAreaId: true,
+      suggestedProcessId: true,
+      suggestedDocumentTypeId: true,
+      requestArea: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+        },
+      },
+      suggestedProcess: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+        },
+      },
+      suggestedDocumentType: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+        },
+      },
+    },
+  })) as
+    | {
+        id: string;
+        assignedEditorUserId: string | null;
+        status: string;
+        cancellationRequestedAt: Date | null;
+        currentTrackingStageCode: string | null;
+        currentResponsibilityRole: string | null;
+        waitingReason: string | null;
+        requesterArea: string | null;
+        requesterAreaId: string | null;
+        suggestedProcessId: string | null;
+        suggestedDocumentTypeId: string | null;
+        requestArea: { id: string; code: string; name: string } | null;
+        suggestedProcess: { id: string; code: string; name: string } | null;
+        suggestedDocumentType: { id: string; code: string; name: string } | null;
+      }
+    | null;
+
+  if (!request) {
+    throw new Error("La solicitud ya no existe.");
+  }
+
+  if (request.status === "CLOSED" || request.status === "CANCELLED") {
+    throw new Error("No se puede reclasificar una solicitud cerrada o cancelada.");
+  }
+
+  if (request.cancellationRequestedAt) {
+    throw new Error("No se puede reclasificar mientras la cancelacion este pendiente.");
+  }
+
+  const canManage =
+    input.actorUser.role === "ADMINISTRATOR" ||
+    request.assignedEditorUserId === input.actorUser.id;
+
+  if (!canManage) {
+    throw new Error("No tienes permiso para actualizar la clasificacion de esta solicitud.");
+  }
+
+  const [area, process, documentType] = await Promise.all([
+    getActiveAreaById(input.requesterAreaId),
+    getActiveProcessById(input.suggestedProcessId),
+    getActiveDocumentTypeById(input.suggestedDocumentTypeId),
+  ]);
+
+  if (!area) {
+    throw new Error("Debes seleccionar un area activa del catalogo.");
+  }
+
+  if (!process) {
+    throw new Error("Debes seleccionar un proceso activo del catalogo.");
+  }
+
+  if (!documentType) {
+    throw new Error("Debes seleccionar un tipo documental activo del catalogo.");
+  }
+
+  const previousAreaLabel =
+    request.requesterArea || (request.requestArea ? formatOptionLabel(request.requestArea) : "Sin area");
+  const nextAreaLabel = formatOptionLabel(area);
+  const previousProcessLabel = request.suggestedProcess
+    ? formatOptionLabel(request.suggestedProcess)
+    : "Sin proceso sugerido";
+  const previousDocumentTypeLabel = request.suggestedDocumentType
+    ? formatOptionLabel(request.suggestedDocumentType)
+    : "Sin tipo sugerido";
+  const nextProcessLabel = formatOptionLabel(process);
+  const nextDocumentTypeLabel = formatOptionLabel(documentType);
+
+  const changes: string[] = [];
+
+  if (request.requesterAreaId !== area.id || previousAreaLabel !== nextAreaLabel) {
+    changes.push(`Area: ${previousAreaLabel} -> ${nextAreaLabel}`);
+  }
+
+  if (request.suggestedProcessId !== process.id) {
+    changes.push(`Proceso: ${previousProcessLabel} -> ${nextProcessLabel}`);
+  }
+
+  if (request.suggestedDocumentTypeId !== documentType.id) {
+    changes.push(`Tipo documental: ${previousDocumentTypeLabel} -> ${nextDocumentTypeLabel}`);
+  }
+
+  if (changes.length === 0) {
+    throw new Error("No hay cambios en la clasificacion para guardar.");
+  }
+
+  await prismaTracking.documentRequest.update({
+    where: { id: input.requestId },
+    data: {
+      requesterArea: nextAreaLabel,
+      requesterAreaId: area.id,
+      suggestedProcessId: process.id,
+      suggestedDocumentTypeId: documentType.id,
+    },
+  });
+
+  const noteParts = [`Clasificacion actualizada. ${changes.join(". ")}.`];
+
+  if (input.note) {
+    noteParts.push(`Motivo: ${input.note}`);
+  }
+
+  await appendRequestActivity({
+    documentRequestId: input.requestId,
+    actorUserId: input.actorUser.id,
+    activityType: "CLASSIFICATION_UPDATED",
+    trackingStageCode: request.currentTrackingStageCode || "0.1",
+    responsibilityRole: normalizeResponsibilityRole(request.currentResponsibilityRole),
+    waitingReason: normalizeWaitingReason(request.waitingReason),
+    note: noteParts.join(" "),
+    statusAfter: normalizeWorkflowStatus(request.status),
+  });
+}
+
 export async function requestCancellation(input: {
   actorUser: SessionUser;
   reason: string;
@@ -946,6 +1161,7 @@ async function createRequestWithGeneratedCode(input: {
   requesterUserId: string;
   createdByUserId: string;
   requesterArea: string;
+  requesterAreaId: string;
   requestType: RequestType;
   suggestedProcessId: string;
   suggestedDocumentTypeId: string;
@@ -977,6 +1193,7 @@ async function createRequestWithGeneratedCode(input: {
           requesterUserId: input.requesterUserId,
           createdByUserId: input.createdByUserId,
           requesterArea: input.requesterArea,
+          requesterAreaId: input.requesterAreaId,
           requestType: input.requestType,
           suggestedProcessId: input.suggestedProcessId,
           suggestedDocumentTypeId: input.suggestedDocumentTypeId,
@@ -1053,6 +1270,24 @@ async function listProcessOptions() {
     id: process.id,
     code: process.code,
     label: `${process.code} - ${process.name}`,
+  }));
+}
+
+async function listAreaOptions() {
+  const areas = await prisma.area.findMany({
+    where: { isActive: true },
+    orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
+    select: {
+      id: true,
+      code: true,
+      name: true,
+    },
+  });
+
+  return areas.map<RequestOptionRecord>((area) => ({
+    id: area.id,
+    code: area.code,
+    label: formatOptionLabel(area),
   }));
 }
 
@@ -1353,6 +1588,7 @@ function mapRequestToListRecord(
 function mapRequestToDetailRecord(
   request: RequestWithRelations,
   people: Map<string, { id: string; name: string; username?: string }>,
+  user: Pick<SessionUser, "id" | "permissions" | "role">,
 ) {
   const requestType = normalizeRequestType(request.requestType);
   const currentStage = getRequestTrackingStage(request.currentTrackingStageCode, requestType);
@@ -1372,7 +1608,10 @@ function mapRequestToDetailRecord(
     title: request.title,
     description: request.description,
     justification: request.justification || undefined,
-    requesterArea: request.requesterArea || undefined,
+    requesterAreaId: request.requesterAreaId || request.requestArea?.id || undefined,
+    requesterArea:
+      request.requesterArea ||
+      (request.requestArea ? formatOptionLabel(request.requestArea) : undefined),
     priority: request.priority ? normalizePriority(request.priority) : undefined,
     requiredDate: request.requiredDate ? formatDate(request.requiredDate) : undefined,
     status: normalizeWorkflowStatus(request.status),
@@ -1430,12 +1669,24 @@ function mapRequestToDetailRecord(
         }
       : undefined,
     attachments: request.attachments.map((attachment) => ({
-      id: attachment.id,
-      originalFileName: attachment.originalFileName,
-      mimeType: attachment.mimeType,
-      sizeBytes: attachment.sizeBytes,
-      uploadedAt: formatDateTime(attachment.uploadedAt),
-      downloadHref: `/api/request-attachments/${attachment.id}`,
+      ...(() => {
+        const previewKind = getFilePreviewKind(attachment);
+
+        return {
+          canDownload: canDownloadRequestAttachment(user, request.requesterUserId),
+          canPreview:
+            canAccessRequestAttachment(user, request.requesterUserId) &&
+            previewKind !== "unsupported",
+          id: attachment.id,
+          downloadHref: `/api/request-attachments/${attachment.id}`,
+          mimeType: attachment.mimeType,
+          originalFileName: attachment.originalFileName,
+          previewHref: buildFilePreviewHref("/api/request-attachments", attachment.id),
+          previewKind,
+          sizeBytes: attachment.sizeBytes,
+          uploadedAt: formatDateTime(attachment.uploadedAt),
+        };
+      })(),
     })),
     activities: request.activities.map((activity) =>
       mapRequestActivityRecord(activity, people, requestType),
@@ -1529,6 +1780,7 @@ function normalizeRequestActivityType(activityType: string): RequestActivityType
     case "ASSIGNED":
     case "REASSIGNED":
     case "STARTED":
+    case "CLASSIFICATION_UPDATED":
     case "CANCELLATION_REQUESTED":
     case "CANCELLATION_REJECTED":
     case "PROGRESS_UPDATED":
@@ -1650,6 +1902,52 @@ async function appendRequestActivity(input: {
       statusAfter: input.statusAfter || null,
     },
   });
+}
+
+async function getActiveAreaById(areaId: string) {
+  return prisma.area.findFirst({
+    where: {
+      id: areaId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+    },
+  });
+}
+
+async function getActiveProcessById(processId: string) {
+  return prisma.process.findFirst({
+    where: {
+      id: processId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+    },
+  });
+}
+
+async function getActiveDocumentTypeById(documentTypeId: string) {
+  return prisma.documentType.findFirst({
+    where: {
+      id: documentTypeId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+    },
+  });
+}
+
+function formatOptionLabel(option: { code: string; name: string }) {
+  return `${option.code} - ${option.name}`;
 }
 
 function formatDate(date: Date) {

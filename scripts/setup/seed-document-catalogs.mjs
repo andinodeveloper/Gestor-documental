@@ -84,6 +84,89 @@ const documentTypes = [
   { code: "PRG", name: "Programa", category: "secundario" },
 ];
 
+const areas = [
+  {
+    code: "DIR",
+    name: "Direccion / Gerencia General",
+    description: "Estrategia, actas, decisiones ejecutivas y lineamientos corporativos.",
+  },
+  {
+    code: "COM",
+    name: "Comercial / Ventas",
+    description: "Ventas, metas comerciales, promociones, precios y desempeno comercial.",
+  },
+  {
+    code: "OPE",
+    name: "Operaciones Retail",
+    description: "Operacion de tiendas, apertura, cierre, procedimientos operativos y ejecucion en piso de venta.",
+  },
+  {
+    code: "ABA",
+    name: "Abastecimiento / Compras",
+    description: "Compras, proveedores, ordenes de compra, negociaciones y abastecimiento.",
+  },
+  {
+    code: "LOG",
+    name: "Logistica / Distribucion",
+    description: "Almacenes, transporte, distribucion, entregas y recepcion de mercancia.",
+  },
+  {
+    code: "INV",
+    name: "Inventarios",
+    description: "Conteos, ajustes, diferencias, existencias, stock y control de inventario.",
+  },
+  {
+    code: "FIN",
+    name: "Finanzas / Contabilidad",
+    description: "Pagos, facturas, presupuestos, cierres contables y reportes financieros.",
+  },
+  {
+    code: "RRHH",
+    name: "Recursos Humanos",
+    description: "Personal, contratos laborales, vacaciones, capacitaciones y expedientes de colaboradores.",
+  },
+  {
+    code: "MKT",
+    name: "Marketing",
+    description: "Campanas, artes, comunicacion comercial, lanzamientos y material publicitario.",
+  },
+  {
+    code: "TI",
+    name: "Tecnologia / Sistemas",
+    description: "Soporte tecnico, accesos, sistemas, infraestructura tecnologica y cambios de software.",
+  },
+  {
+    code: "LEG",
+    name: "Legal / Cumplimiento",
+    description: "Contratos, normativas, politicas, cumplimiento legal y documentacion regulatoria.",
+  },
+  {
+    code: "CAL",
+    name: "Calidad / Auditoria Interna",
+    description: "Auditorias, controles internos, hallazgos, planes de accion y revisiones.",
+  },
+  {
+    code: "SAC",
+    name: "Servicio al Cliente",
+    description: "Reclamos, garantias, devoluciones, atencion al cliente y casos de servicio.",
+  },
+  {
+    code: "MAN",
+    name: "Mantenimiento / Infraestructura",
+    description: "Locales, equipos, reparaciones, remodelaciones e infraestructura fisica.",
+  },
+  {
+    code: "SEG",
+    name: "Seguridad / Prevencion de Perdidas",
+    description: "Incidentes, CCTV, controles de seguridad, prevencion de perdidas y reportes de riesgo.",
+  },
+  {
+    code: "ADM",
+    name: "Administracion General",
+    description: "Documentos administrativos transversales que no correspondan claramente a otra area.",
+  },
+];
+
 async function main() {
   let processCount = 0;
 
@@ -150,10 +233,31 @@ async function main() {
     });
   }
 
+  for (const [index, area] of areas.entries()) {
+    await prisma.area.upsert({
+      where: { code: area.code },
+      update: {
+        name: area.name,
+        description: area.description,
+        sortOrder: index,
+        isActive: true,
+        validTo: null,
+      },
+      create: {
+        code: area.code,
+        name: area.name,
+        description: area.description,
+        sortOrder: index,
+        isActive: true,
+      },
+    });
+  }
+
   console.log("Catalog seed completed:");
   console.log(`- process groups: ${processGroups.length}`);
   console.log(`- processes: ${processCount}`);
   console.log(`- document types: ${documentTypes.length}`);
+  console.log(`- areas: ${areas.length}`);
 }
 
 try {

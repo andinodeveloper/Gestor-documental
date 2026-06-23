@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUser } from "@/lib/server/auth";
 import { prisma } from "@/lib/server/db";
+import { canDownloadRequestAttachment } from "@/lib/server/file-access";
 import { readStoredRequestAttachment } from "@/lib/server/request-storage";
 
 export async function GET(
@@ -33,12 +34,7 @@ export async function GET(
     return NextResponse.json({ message: "El anexo solicitado no existe." }, { status: 404 });
   }
 
-  const canDownloadAttachment =
-    user.role === "ADMINISTRATOR" ||
-    user.role === "EDITOR" ||
-    attachment.documentRequest.requesterUserId === user.id;
-
-  if (!canDownloadAttachment) {
+  if (!canDownloadRequestAttachment(user, attachment.documentRequest.requesterUserId)) {
     return NextResponse.json(
       { message: "No tienes permiso para descargar este anexo." },
       { status: 403 },

@@ -19,10 +19,13 @@ export default async function ExplorerPage() {
         actions={
           <RequestModalLauncher
             allowedExtensionsLabel={intakeSnapshot.attachmentPolicy.allowedExtensionsLabel}
+            areaOptions={intakeSnapshot.areaOptions}
             canCreateRequests={intakeSnapshot.canCreateRequests}
             currentUser={user}
             documentTypeOptions={intakeSnapshot.documentTypeOptions}
+            maxAttachmentCountLabel={intakeSnapshot.attachmentPolicy.maxAttachmentCountLabel}
             maxAttachmentSizeLabel={intakeSnapshot.attachmentPolicy.maxAttachmentSizeLabel}
+            maxTotalSizeLabel={intakeSnapshot.attachmentPolicy.maxTotalSizeLabel}
             processOptions={intakeSnapshot.processOptions}
             relatedDocumentOptions={intakeSnapshot.relatedDocumentOptions}
             requesterOptions={intakeSnapshot.requesterOptions}

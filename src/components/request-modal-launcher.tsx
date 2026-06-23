@@ -18,31 +18,38 @@ const initialState: RequestActionState = {
 
 export function RequestModalLauncher({
   allowedExtensionsLabel,
+  areaOptions,
   buttonClassName = "button-primary",
   buttonLabel = "Nueva solicitud",
   canCreateRequests,
   currentUser,
   documentTypeOptions,
+  maxAttachmentCountLabel,
   maxAttachmentSizeLabel,
+  maxTotalSizeLabel,
   processOptions,
   relatedDocumentOptions,
   requesterOptions,
   returnPath,
 }: {
   allowedExtensionsLabel: string;
+  areaOptions: RequestOptionRecord[];
   buttonClassName?: string;
   buttonLabel?: string;
   canCreateRequests: boolean;
   currentUser: Pick<SessionUser, "id" | "name" | "role">;
   documentTypeOptions: RequestOptionRecord[];
+  maxAttachmentCountLabel: string;
   maxAttachmentSizeLabel: string;
+  maxTotalSizeLabel: string;
   processOptions: RequestOptionRecord[];
   relatedDocumentOptions: RequestOptionRecord[];
   requesterOptions: RequesterOptionRecord[];
   returnPath: string;
 }) {
   const [open, setOpen] = useState(false);
-  const catalogReady = processOptions.length > 0 && documentTypeOptions.length > 0;
+  const catalogReady =
+    areaOptions.length > 0 && processOptions.length > 0 && documentTypeOptions.length > 0;
   const canResolveRequester =
     currentUser.role === "READER" || requesterOptions.length > 0;
   const isDisabled = !canCreateRequests || !catalogReady || !canResolveRequester;
@@ -111,10 +118,13 @@ export function RequestModalLauncher({
             <div className="flex min-h-0 flex-1 flex-col">
               <RequestCreateForm
                 allowedExtensionsLabel={allowedExtensionsLabel}
+                areaOptions={areaOptions}
                 catalogReady={catalogReady}
                 currentUser={currentUser}
                 documentTypeOptions={documentTypeOptions}
+                maxAttachmentCountLabel={maxAttachmentCountLabel}
                 maxAttachmentSizeLabel={maxAttachmentSizeLabel}
+                maxTotalSizeLabel={maxTotalSizeLabel}
                 processOptions={processOptions}
                 relatedDocumentOptions={relatedDocumentOptions}
                 requesterOptions={requesterOptions}
@@ -130,20 +140,26 @@ export function RequestModalLauncher({
 
 function RequestCreateForm({
   allowedExtensionsLabel,
+  areaOptions,
   catalogReady,
   currentUser,
   documentTypeOptions,
+  maxAttachmentCountLabel,
   maxAttachmentSizeLabel,
+  maxTotalSizeLabel,
   processOptions,
   relatedDocumentOptions,
   requesterOptions,
   returnPath,
 }: {
   allowedExtensionsLabel: string;
+  areaOptions: RequestOptionRecord[];
   catalogReady: boolean;
   currentUser: Pick<SessionUser, "id" | "name" | "role">;
   documentTypeOptions: RequestOptionRecord[];
+  maxAttachmentCountLabel: string;
   maxAttachmentSizeLabel: string;
+  maxTotalSizeLabel: string;
   processOptions: RequestOptionRecord[];
   relatedDocumentOptions: RequestOptionRecord[];
   requesterOptions: RequesterOptionRecord[];
@@ -156,8 +172,8 @@ function RequestCreateForm({
   if (!catalogReady) {
     return (
       <div className="rounded-[18px] border border-red/18 bg-red-soft px-4 py-4 text-sm leading-6 text-red">
-        No hay catalogos activos de procesos o tipos documentales. Ejecuta la semilla inicial
-        antes de capturar solicitudes.
+        No hay catalogos activos de areas, procesos o tipos documentales. Ejecuta la semilla
+        inicial antes de capturar solicitudes.
       </div>
     );
   }
@@ -248,13 +264,18 @@ function RequestCreateForm({
 
       <label className="block space-y-2">
         <span className="text-sm font-semibold text-foreground">Area solicitante</span>
-        <input
-          name="requesterArea"
-          className="field-input"
-          placeholder="Ej. Operacion de salas, Auditoria interna"
-          required
-        />
-        <FieldError message={state.fieldErrors?.requesterArea} />
+        <select name="requesterAreaId" className="field-input" defaultValue="" required>
+          <option value="">Selecciona un area</option>
+          {areaOptions.map((area) => (
+            <option key={area.id} value={area.id}>
+              {area.label}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs leading-5 text-slate">
+          Selecciona unicamente areas activas del catalogo funcional.
+        </p>
+        <FieldError message={state.fieldErrors?.requesterAreaId} />
       </label>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -354,7 +375,8 @@ function RequestCreateForm({
         />
         <p className="text-xs leading-5 text-slate">
           Formatos permitidos: {allowedExtensionsLabel}. Tamano maximo por archivo:{" "}
-          {maxAttachmentSizeLabel}.
+          {maxAttachmentSizeLabel}. Cantidad maxima: {maxAttachmentCountLabel}. Total por
+          solicitud: {maxTotalSizeLabel}.
         </p>
       </label>
 

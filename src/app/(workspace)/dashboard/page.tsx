@@ -12,13 +12,13 @@ import {
   workflowStatusLabels,
 } from "@/lib/presenters";
 import { requireAuthorizedUser } from "@/lib/server/auth";
-import { getRequestIntakeSnapshot } from "@/lib/server/request-service";
 import { getDashboardSnapshot } from "@/lib/server/mock-data-service";
+import { getRequestIntakeSnapshot } from "@/lib/server/request-service";
 
 export default async function DashboardPage() {
   const user = await requireAuthorizedUser("/dashboard");
   const [{ events, metrics, requests, reviews }, intakeSnapshot] = await Promise.all([
-    getDashboardSnapshot(),
+    getDashboardSnapshot(user),
     getRequestIntakeSnapshot(user),
   ]);
 
@@ -34,10 +34,13 @@ export default async function DashboardPage() {
             </Link>
             <RequestModalLauncher
               allowedExtensionsLabel={intakeSnapshot.attachmentPolicy.allowedExtensionsLabel}
+              areaOptions={intakeSnapshot.areaOptions}
               canCreateRequests={intakeSnapshot.canCreateRequests}
               currentUser={user}
               documentTypeOptions={intakeSnapshot.documentTypeOptions}
+              maxAttachmentCountLabel={intakeSnapshot.attachmentPolicy.maxAttachmentCountLabel}
               maxAttachmentSizeLabel={intakeSnapshot.attachmentPolicy.maxAttachmentSizeLabel}
+              maxTotalSizeLabel={intakeSnapshot.attachmentPolicy.maxTotalSizeLabel}
               processOptions={intakeSnapshot.processOptions}
               relatedDocumentOptions={intakeSnapshot.relatedDocumentOptions}
               requesterOptions={intakeSnapshot.requesterOptions}
@@ -123,7 +126,11 @@ export default async function DashboardPage() {
                     </td>
                     <td className="px-6 py-5">
                       <Link
-                        href={request.id ? `/requests?requestId=${encodeURIComponent(request.id)}` : "/requests"}
+                        href={
+                          request.id
+                            ? `/requests?requestId=${encodeURIComponent(request.id)}`
+                            : "/requests"
+                        }
                         className="button-secondary"
                       >
                         Gestionar
@@ -143,26 +150,34 @@ export default async function DashboardPage() {
               <h2 className="panel-title mt-2">Revision y aprobacion</h2>
             </div>
             <div className="space-y-3">
-              {reviews.map((task) => (
-                <div
-                  key={`${task.code}-${task.role}`}
-                  className="rounded-[18px] border border-line bg-white/72 px-4 py-4"
-                >
-                  <div className="mb-3 flex flex-wrap items-center gap-2">
-                    <StatusChip tone={workflowTone(reviewDecisionLabels[task.status])}>
-                      {reviewDecisionLabels[task.status]}
-                    </StatusChip>
-                    <StatusChip tone="slate">{task.role}</StatusChip>
+              {reviews.length > 0 ? (
+                reviews.map((task) => (
+                  <div
+                    key={`${task.code}-${task.role}`}
+                    className="rounded-[18px] border border-line bg-white/72 px-4 py-4"
+                  >
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                      <StatusChip tone={workflowTone(reviewDecisionLabels[task.status])}>
+                        {reviewDecisionLabels[task.status]}
+                      </StatusChip>
+                      <StatusChip tone="slate">{task.role}</StatusChip>
+                    </div>
+                    <p className="font-semibold tracking-[-0.02em] text-foreground">
+                      {task.code}
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-slate">{task.title}</p>
+                    <p className="mt-3 text-[10px] uppercase tracking-[0.18em] text-slate">
+                      {task.owner} · {task.dueDate}
+                    </p>
                   </div>
-                  <p className="font-semibold tracking-[-0.02em] text-foreground">
-                    {task.code}
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-slate">{task.title}</p>
-                  <p className="mt-3 text-[10px] uppercase tracking-[0.18em] text-slate">
-                    {task.owner} · {task.dueDate}
+                ))
+              ) : (
+                <div className="rounded-[18px] border border-dashed border-line bg-panel-muted/45 px-4 py-5">
+                  <p className="text-sm leading-7 text-slate">
+                    No tienes asignaciones pendientes en el flujo de revision.
                   </p>
                 </div>
-              ))}
+              )}
             </div>
           </article>
 

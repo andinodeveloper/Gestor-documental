@@ -1,11 +1,17 @@
 import type {
+  DocumentVersionStatus,
   DocumentState,
+  DraftCommentStatus,
+  DraftCommentType,
   RequestProgressItemStatus,
   RequestActivityType,
   RequestPriority,
   RequestType,
   ResponsibilityRole,
+  ReviewAssignmentRole,
   ReviewDecision,
+  ReviewRoundStatus,
+  VersionChangeKind,
   VisibilityLevel,
   WaitingReason,
   WorkflowStatus,
@@ -48,6 +54,7 @@ export const requestActivityLabels: Record<RequestActivityType, string> = {
   ASSIGNED: "Solicitud asignada",
   REASSIGNED: "Solicitud reasignada",
   STARTED: "Atencion iniciada",
+  CLASSIFICATION_UPDATED: "Clasificacion actualizada",
   CANCELLATION_REQUESTED: "Cancelacion solicitada",
   CANCELLATION_REJECTED: "Cancelacion rechazada",
   PROGRESS_UPDATED: "Nota registrada",
@@ -98,4 +105,41 @@ export const reviewDecisionLabels: Record<ReviewDecision, string> = {
   PENDING: "Pendiente",
   APPROVED: "Aprobado",
   REJECTED: "Rechazado",
+};
+
+export const reviewAssignmentRoleLabels: Record<ReviewAssignmentRole, string> = {
+  REVIEWER: "Revisor",
+  APPROVER: "Aprobador",
+};
+
+export const reviewRoundStatusLabels: Record<ReviewRoundStatus, string> = {
+  IN_REVIEW: "En revision",
+  OBSERVED: "Observada",
+  APPROVED: "Aprobada",
+  OFFICIALIZED: "Oficializada",
+};
+
+export const documentVersionStatusLabels: Record<DocumentVersionStatus, string> = {
+  DRAFT: "Borrador",
+  IN_REVIEW: "En revision",
+  REJECTED: "Rechazado",
+  APPROVED: "Aprobado",
+  OFFICIAL: "Oficial",
+  SUPERSEDED: "Sustituido",
+  ARCHIVED: "Archivado",
+};
+
+export const versionChangeKindLabels: Record<VersionChangeKind, string> = {
+  MAJOR: "Mayor",
+  MINOR: "Menor",
+};
+
+export const draftCommentTypeLabels: Record<DraftCommentType, string> = {
+  OBSERVATION: "Observacion",
+  SUGGESTION: "Sugerencia",
+};
+
+export const draftCommentStatusLabels: Record<DraftCommentStatus, string> = {
+  OPEN: "Pendiente",
+  RESOLVED: "Resuelta",
 };
